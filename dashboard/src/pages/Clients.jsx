@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { UserPlus, ChevronRight, Search } from 'lucide-react'
+import { UserPlus, ChevronRight, Search, Copy, Check } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 
 function useClients() {
@@ -53,7 +53,7 @@ function useCreateClient() {
   return useMutation({
     mutationFn: async ({ email, fullName }) => {
       const { data, error } = await supabase.functions.invoke('invite-client', {
-        body: { email, full_name: fullName },
+        body: { email, full_name: fullName, redirect_to: `${window.location.origin}/set-password` },
       })
       if (error) {
         // Su risposta non-2xx supabase-js dà un messaggio generico: leggiamo
@@ -66,6 +66,7 @@ function useCreateClient() {
         throw new Error(message)
       }
       if (data?.error) throw new Error(data.error)
+      return data   // { link, user }
     },
     onSuccess: () => {
       setTimeout(() => qc.invalidateQueries({ queryKey: ['clients'] }), 500)
@@ -85,31 +86,58 @@ function NewClientModal({ onClose }) {
   const [fullName, setFullName] = useState('')
   const [error, setError] = useState(null)
   const [sent, setSent] = useState(false)
+  const [link, setLink] = useState(null)
+  const [copied, setCopied] = useState(false)
   const create = useCreateClient()
 
   async function handleSubmit(e) {
     e.preventDefault()
     setError(null)
     try {
-      await create.mutateAsync({ email, fullName })
+      const res = await create.mutateAsync({ email, fullName })
+      setLink(res?.link ?? null)
       setSent(true)
     } catch (err) {
-      setError(err.message || "Errore durante l'invio dell'invito")
+      setError(err.message || "Errore durante la creazione dell'invito")
     }
+  }
+
+  function copyLink() {
+    if (!link) return
+    navigator.clipboard?.writeText(link)
+      .then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500) })
+      .catch(() => {})
   }
 
   if (sent) {
     return (
       <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 px-4">
-        <div className="card w-full max-w-md text-center">
-          <div className="text-4xl mb-4">✉️</div>
-          <h2 className="font-heading font-bold italic text-2xl uppercase text-white mb-2">
-            Invito inviato
-          </h2>
-          <p className="text-slate-400 text-sm mb-6">
-            <span className="text-white">{email}</span> riceverà una email con il link per impostare la propria password e accedere all'app.
-          </p>
-          <button onClick={onClose} className="btn-primary w-full justify-center">
+        <div className="card w-full max-w-md">
+          <div className="text-center mb-4">
+            <div className="text-4xl mb-3">🔗</div>
+            <h2 className="font-heading font-bold italic text-2xl uppercase text-white mb-2">
+              Link di invito pronto
+            </h2>
+            <p className="text-slate-400 text-sm">
+              Invia questo link a <span className="text-white">{fullName || email}</span> su un canale sicuro (es. WhatsApp). Aprendolo potrà impostare la propria password e accedere all'app. Il link scade ed è monouso.
+            </p>
+          </div>
+          {link ? (
+            <div className="flex gap-2 mb-5">
+              <input
+                readOnly
+                value={link}
+                onFocus={e => e.target.select()}
+                className="input text-xs flex-1"
+              />
+              <button onClick={copyLink} className="btn-primary px-3 shrink-0" title="Copia link">
+                {copied ? <Check size={16} /> : <Copy size={16} />}
+              </button>
+            </div>
+          ) : (
+            <p className="text-amber-400 text-sm mb-5">Link non disponibile. Riprova a creare l'invito.</p>
+          )}
+          <button onClick={onClose} className="btn-ghost w-full justify-center">
             CHIUDI
           </button>
         </div>
@@ -153,7 +181,7 @@ function NewClientModal({ onClose }) {
             <p className="text-red-400 text-sm bg-red-900/20 px-4 py-2.5">{error}</p>
           )}
           <p className="text-slate-500 text-xs">
-            Il cliente riceverà una email con il link per impostare la propria password.
+            Verrà generato un link di invito da inviare tu al cliente. Nessuna email automatica.
           </p>
           <div className="flex gap-3 pt-2">
             <button type="button" onClick={onClose} className="btn-ghost flex-1 justify-center">
@@ -164,7 +192,7 @@ function NewClientModal({ onClose }) {
               disabled={create.isPending}
               className="btn-primary flex-1 justify-center disabled:opacity-50"
             >
-              {create.isPending ? 'INVIO...' : 'INVIA INVITO'}
+              {create.isPending ? 'GENERO...' : 'GENERA LINK'}
             </button>
           </div>
         </form>

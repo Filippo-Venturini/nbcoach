@@ -63,9 +63,15 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
     )
 
-    const { data, error: inviteError } = await adminClient.auth.admin.inviteUserByEmail(email, {
-      data: { full_name, role: 'client' },
-      ...(redirect_to ? { redirectTo: redirect_to } : {}),
+    // Genera il link di invito SENZA inviare email: il PT lo condivide a mano.
+    // Crea comunque l'utente (con full_name e role) legato a questa email.
+    const { data, error: inviteError } = await adminClient.auth.admin.generateLink({
+      type: 'invite',
+      email,
+      options: {
+        data: { full_name, role: 'client' },
+        ...(redirect_to ? { redirectTo: redirect_to } : {}),
+      },
     })
 
     if (inviteError) {
@@ -87,7 +93,7 @@ Deno.serve(async (req) => {
       })
     }
 
-    return new Response(JSON.stringify({ user: data.user }), {
+    return new Response(JSON.stringify({ link: data.properties?.action_link, user: data.user }), {
       status: 200,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     })
