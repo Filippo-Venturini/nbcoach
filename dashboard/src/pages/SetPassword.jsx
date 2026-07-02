@@ -56,10 +56,16 @@ export function SetPassword() {
 
     if (error) { setError(error.message); return }
     setDone(true)
-    setTimeout(async () => {
+    if (type === 'invite') {
+      // Nuovo utente: userà l'app, non il dashboard. Nessun redirect al login:
+      // chiudiamo solo la sessione web e mostriamo il messaggio di conferma.
       await supabase.auth.signOut()
-      navigate('/login', { replace: true })
-    }, 3000)
+    } else {
+      setTimeout(async () => {
+        await supabase.auth.signOut()
+        navigate('/login', { replace: true })
+      }, 3000)
+    }
   }
 
   // ── Link scaduto o invalido ───────────────────────────────────
@@ -112,14 +118,20 @@ export function SetPassword() {
           <div className="card space-y-4">
             <CheckCircle className="text-emerald-400 mx-auto" size={40} />
             <p className="text-white font-heading font-bold uppercase text-lg">Password impostata</p>
-            <p className="text-slate-400 text-sm">
-              {type === 'invite'
-                ? 'Account attivato. Tra poco verrai reindirizzato al login.'
-                : 'Password aggiornata. Tra poco verrai reindirizzato al login.'}
-            </p>
-            <div className="w-full h-1 bg-navy-700 rounded-full overflow-hidden">
-              <div className="h-full bg-gold-500 animate-[shrink_3s_linear_forwards]" style={{ animation: 'width 3s linear forwards', width: '100%' }} />
-            </div>
+            {type === 'invite' ? (
+              <p className="text-slate-400 text-sm">
+                Il tuo account è attivo. Ora puoi accedere all'app FitCoach usando la tua email e la password appena scelta.
+              </p>
+            ) : (
+              <>
+                <p className="text-slate-400 text-sm">
+                  Password aggiornata. Tra poco verrai reindirizzato al login.
+                </p>
+                <div className="w-full h-1 bg-navy-700 rounded-full overflow-hidden">
+                  <div className="h-full bg-gold-500 animate-[shrink_3s_linear_forwards]" style={{ animation: 'width 3s linear forwards', width: '100%' }} />
+                </div>
+              </>
+            )}
           </div>
         </div>
       </div>
