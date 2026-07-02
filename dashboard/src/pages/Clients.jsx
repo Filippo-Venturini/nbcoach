@@ -55,7 +55,16 @@ function useCreateClient() {
       const { data, error } = await supabase.functions.invoke('invite-client', {
         body: { email, full_name: fullName },
       })
-      if (error) throw error
+      if (error) {
+        // Su risposta non-2xx supabase-js dà un messaggio generico: leggiamo
+        // il messaggio reale dal corpo della risposta della Edge Function.
+        let message = error.message
+        try {
+          const body = await error.context?.json?.()
+          if (body?.error) message = body.error
+        } catch { /* corpo non leggibile, uso il messaggio generico */ }
+        throw new Error(message)
+      }
       if (data?.error) throw new Error(data.error)
     },
     onSuccess: () => {

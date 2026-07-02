@@ -69,12 +69,20 @@ Deno.serve(async (req) => {
     })
 
     if (inviteError) {
-      // Messaggio leggibile per errori comuni
-      const msg = inviteError.message.includes('already registered')
-        ? 'Questa email è già registrata'
-        : inviteError.message
+      console.error('[invite-client] invite error:', inviteError.status, inviteError.code, inviteError.message)
+      const raw = (inviteError.message || '').toLowerCase()
+      let msg = inviteError.message
+      if (raw.includes('already registered') || raw.includes('already been registered')) {
+        msg = 'Questa email è già registrata'
+      } else if (raw.includes('rate limit') || inviteError.status === 429) {
+        msg = "Limite di invii email raggiunto. Con l'SMTP di default di Supabase si possono inviare solo pochi inviti all'ora: attendi un po' oppure configura un SMTP personalizzato."
+      }
+      // Propaga lo status reale (es. 429) quando disponibile
+      const status = (typeof inviteError.status === 'number' && inviteError.status >= 400)
+        ? inviteError.status
+        : 400
       return new Response(JSON.stringify({ error: msg }), {
-        status: 400,
+        status,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       })
     }
