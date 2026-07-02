@@ -1,6 +1,7 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { Camera, ChevronRight, Users, Dumbbell, Salad, AlertTriangle, CalendarClock } from 'lucide-react'
+import { Camera, ChevronRight, ChevronDown, ChevronUp, Users, Dumbbell, Salad, AlertTriangle, CalendarClock } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../hooks/useAuth'
 
@@ -164,6 +165,7 @@ function ExpiryClientRow({ client }) {
   return (
     <Link
       to={`/clients/${client.id}`}
+      state={{ from: 'home' }}
       className="card mb-2 flex items-center justify-between hover:border-navy-600 transition-colors group"
     >
       <div className="flex items-center gap-4">
@@ -194,17 +196,43 @@ function ExpiryClientRow({ client }) {
   )
 }
 
-function ExpirySection({ icon: Icon, iconColor, title, clients }) {
-  if (!clients?.length) return null
+// Sezione collassabile con header a card, stile catalogo esercizi
+function CollapsibleSection({ icon: Icon, iconColor, title, count, defaultOpen = true, children }) {
+  const [open, setOpen] = useState(defaultOpen)
   return (
-    <div className="mb-8">
-      <div className="flex items-center gap-3 mb-5">
-        <Icon size={18} className={iconColor} />
-        <h2 className="font-heading font-bold italic text-xl uppercase text-white">{title}</h2>
-      </div>
-      {clients.map(client => <ExpiryClientRow key={client.id} client={client} />)}
+    <div className="mb-4">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="card w-full flex items-center justify-between gap-4 py-3 hover:bg-navy-700 transition-colors"
+      >
+        <span className="flex items-center gap-3">
+          <Icon size={18} className={iconColor} />
+          <span className="text-lg font-heading font-bold italic uppercase tracking-wide text-white">
+            {title}
+            {typeof count === 'number' && (
+              <span className="text-slate-400 not-italic text-base ml-2">({count})</span>
+            )}
+          </span>
+        </span>
+        {open
+          ? <ChevronUp size={18} className="text-slate-400 shrink-0" />
+          : <ChevronDown size={18} className="text-slate-400 shrink-0" />
+        }
+      </button>
+      {open && <div className="mt-3">{children}</div>}
     </div>
   )
+}
+
+function ExpiryList({ clients, emptyText }) {
+  if (!clients?.length) {
+    return (
+      <div className="card text-center py-8">
+        <p className="text-slate-500 text-sm">{emptyText}</p>
+      </div>
+    )
+  }
+  return clients.map(client => <ExpiryClientRow key={client.id} client={client} />)
 }
 
 // ─── Pagina ───────────────────────────────────────────────────
@@ -245,64 +273,73 @@ export function Home() {
         {/* Scadenze */}
         {expiringLoading && <p className="text-slate-500 text-sm mb-8">Caricamento scadenze...</p>}
 
-        <ExpirySection
-          icon={AlertTriangle}
-          iconColor="text-red-400"
-          title="Urgenti — questa settimana"
-          clients={expiring?.urgent}
-        />
+        {!expiringLoading && (
+          <>
+            <CollapsibleSection
+              icon={AlertTriangle}
+              iconColor="text-red-400"
+              title="Urgenti — questa settimana"
+              count={expiring?.urgent?.length ?? 0}
+            >
+              <ExpiryList clients={expiring?.urgent} emptyText="Nessuna scadenza questa settimana" />
+            </CollapsibleSection>
 
-        <ExpirySection
-          icon={CalendarClock}
-          iconColor="text-amber-400"
-          title="In arrivo — settimana prossima"
-          clients={expiring?.upcoming}
-        />
-
-        {/* Foto recenti */}
-        <div className="flex items-center gap-3 mb-5">
-          <Camera size={18} className="text-gold-500" />
-          <h2 className="font-heading font-bold italic text-xl uppercase text-white">
-            Foto progressi — ultimi 7 giorni
-          </h2>
-        </div>
-
-        {photosLoading && <p className="text-slate-500 text-sm">Caricamento...</p>}
-
-        {!photosLoading && (!byClient || Object.keys(byClient).length === 0) && (
-          <div className="card text-center py-10">
-            <Camera size={32} className="text-slate-600 mx-auto mb-3" />
-            <p className="text-slate-500">Nessuna foto caricata negli ultimi 7 giorni</p>
-          </div>
+            <CollapsibleSection
+              icon={CalendarClock}
+              iconColor="text-amber-400"
+              title="In arrivo — settimana prossima"
+              count={expiring?.upcoming?.length ?? 0}
+            >
+              <ExpiryList clients={expiring?.upcoming} emptyText="Nessuna scadenza la settimana prossima" />
+            </CollapsibleSection>
+          </>
         )}
 
-        {byClient && Object.values(byClient).map(({ profile: client, photos }) => (
-          <Link
-            key={client.id}
-            to={`/clients/${client.id}?tab=photos`}
-            className="card mb-3 flex items-center justify-between hover:border-navy-600 transition-colors group"
-          >
-            <div className="flex items-center gap-4">
-              <div className="w-10 h-10 bg-navy-700 flex items-center justify-center shrink-0">
-                <span className="font-heading font-bold text-gold-500 text-lg">
-                  {client.full_name?.[0]?.toUpperCase() ?? '?'}
-                </span>
-              </div>
-              <div>
-                <p className="font-heading font-bold text-white group-hover:text-gold-400 transition-colors">
-                  {client.full_name}
-                </p>
-                <p className="text-slate-500 text-xs mt-0.5">
-                  {photos.length} foto · ultima il {formatDate(photos[0].created_at)}
-                </p>
-              </div>
+        {/* Foto recenti */}
+        <CollapsibleSection
+          icon={Camera}
+          iconColor="text-gold-500"
+          title="Foto progressi — ultimi 7 giorni"
+          count={byClient ? Object.keys(byClient).length : 0}
+        >
+          {photosLoading && <p className="text-slate-500 text-sm">Caricamento...</p>}
+
+          {!photosLoading && (!byClient || Object.keys(byClient).length === 0) && (
+            <div className="card text-center py-10">
+              <Camera size={32} className="text-slate-600 mx-auto mb-3" />
+              <p className="text-slate-500">Nessuna foto caricata negli ultimi 7 giorni</p>
             </div>
-            <div className="flex items-center gap-3">
-              <span className="badge-gold">{photos.length} nuove</span>
-              <ChevronRight size={16} className="text-slate-600 group-hover:text-gold-500 transition-colors" />
-            </div>
-          </Link>
-        ))}
+          )}
+
+          {byClient && Object.values(byClient).map(({ profile: client, photos }) => (
+            <Link
+              key={client.id}
+              to={`/clients/${client.id}?tab=photos`}
+              state={{ from: 'home' }}
+              className="card mb-3 flex items-center justify-between hover:border-navy-600 transition-colors group"
+            >
+              <div className="flex items-center gap-4">
+                <div className="w-10 h-10 bg-navy-700 flex items-center justify-center shrink-0">
+                  <span className="font-heading font-bold text-gold-500 text-lg">
+                    {client.full_name?.[0]?.toUpperCase() ?? '?'}
+                  </span>
+                </div>
+                <div>
+                  <p className="font-heading font-bold text-white group-hover:text-gold-400 transition-colors">
+                    {client.full_name}
+                  </p>
+                  <p className="text-slate-500 text-xs mt-0.5">
+                    {photos.length} foto · ultima il {formatDate(photos[0].created_at)}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="badge-gold">{photos.length} nuove</span>
+                <ChevronRight size={16} className="text-slate-600 group-hover:text-gold-500 transition-colors" />
+              </div>
+            </Link>
+          ))}
+        </CollapsibleSection>
       </div>
     </div>
   )

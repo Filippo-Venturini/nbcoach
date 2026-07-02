@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Plus, Trash2, Search, X, ChevronDown, ChevronUp, GripVertical } from 'lucide-react'
+import { ArrowLeft, Plus, Trash2, Search, X, ChevronDown, ChevronUp, GripVertical, Copy, ClipboardPaste, Check } from 'lucide-react'
 import {
   DndContext,
   closestCenter,
@@ -35,6 +35,26 @@ function useCatalog() {
   })
 }
 
+// Recupera l'ultima matrice stimoli compilata per il cliente (dall'ultimo programma creato)
+function useLastStimulusMatrix(clientId) {
+  return useQuery({
+    queryKey: ['last-stimulus-matrix', clientId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('workout_programs')
+        .select('stimulus_matrix')
+        .eq('client_id', clientId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      if (error) throw error
+      return data?.stimulus_matrix ?? {}
+    },
+    enabled: !!clientId,
+    refetchOnMount: 'always',
+  })
+}
+
 function useClient(id) {
   return useQuery({
     queryKey: ['client', id],
@@ -53,12 +73,12 @@ function useClient(id) {
 function useSaveProgram() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: async ({ clientId, programName, programNotes, programExpiry, plans }) => {
+    mutationFn: async ({ clientId, programName, programNotes, programExpiry, stimulusMatrix, plans }) => {
       await supabase.from('workout_programs').update({ is_active: false }).eq('client_id', clientId)
 
       const { data: program, error: progError } = await supabase
         .from('workout_programs')
-        .insert({ client_id: clientId, name: programName || null, notes: programNotes || null, expires_at: programExpiry || null, is_active: true })
+        .insert({ client_id: clientId, name: programName || null, notes: programNotes || null, expires_at: programExpiry || null, stimulus_matrix: stimulusMatrix ?? {}, is_active: true })
         .select().single()
       if (progError) throw progError
 
@@ -89,6 +109,7 @@ function useSaveProgram() {
     },
     onSuccess: (_, { clientId }) => {
       qc.invalidateQueries({ queryKey: ['workout-programs', clientId] })
+      qc.invalidateQueries({ queryKey: ['last-stimulus-matrix', clientId] })
     },
   })
 }
@@ -163,6 +184,16 @@ function SortableExerciseRow({ ex, onUpdate, onRemove }) {
 const MUSCLE_GROUPS = [
   'Tutti', 'Petto', 'Centro Schiena', 'Dorsale', 'Spalle', 'Spalla Posteriore', 'Bicipiti',
   'Tricipiti', 'Quadricipiti', 'Femorali', 'Glutei', 'Addome', 'Stabilizzatori',
+]
+
+// Gruppi muscolari per la matrice degli stimoli (tutti quelli registrati, senza "Tutti")
+const STIMULUS_GROUPS = MUSCLE_GROUPS.filter(g => g !== 'Tutti')
+
+// Colonne della matrice degli stimoli
+const STIMULUS_COLS = [
+  { col: 'prev', label: 'Stimolo precedente' },
+  { col: 'current', label: 'Stimolo attuale' },
+  { col: 'next', label: 'Stimolo successivo' },
 ]
 
 function CatalogPanel({ plans, activePlanIdx, onAddExercise }) {
@@ -296,11 +327,24 @@ export function NewWorkoutProgram() {
   const { id: clientId } = useParams()
   const navigate = useNavigate()
   const { data: client } = useClient(clientId)
+  const { data: lastStimuli, isFetching: lastStimuliFetching } = useLastStimulusMatrix(clientId)
   const saveProgram = useSaveProgram()
 
   const [programName, setProgramName] = useState('')
   const [programNotes, setProgramNotes] = useState('')
   const [programExpiry, setProgramExpiry] = useState('')
+  const [stimuli, setStimuli] = useState({})
+  const [stimuliSeeded, setStimuliSeeded] = useState(false)
+  const [copiedCol, setCopiedCol] = useState(null)
+
+  // Precompila la tabella con l'ultima compilazione del cliente (una sola volta,
+  // solo dopo che il dato fresco è stato caricato dal server per evitare seeding da cache stale)
+  useEffect(() => {
+    if (!stimuliSeeded && !lastStimuliFetching && lastStimuli) {
+      setStimuli(lastStimuli)
+      setStimuliSeeded(true)
+    }
+  }, [lastStimuli, lastStimuliFetching, stimuliSeeded])
   const [plans, setPlans] = useState([makeEmptyPlan('Scheda A')])
   const [activePlanIdx, setActivePlanIdx] = useState(0)
   const [expandedPlans, setExpandedPlans] = useState({ 0: true })
@@ -310,6 +354,37 @@ export function NewWorkoutProgram() {
   const sensors = useSensors(useSensor(PointerSensor, {
     activationConstraint: { distance: 5 }, // evita attivazione su click normali
   }))
+
+  function updateStimulus(group, col, value) {
+    setStimuli(prev => ({ ...prev, [group]: { ...prev[group], [col]: value } }))
+  }
+
+  // Copia l'intera colonna negli appunti (una riga per gruppo muscolare, in ordine)
+  function copyColumn(col) {
+    const text = STIMULUS_GROUPS.map(mg => stimuli[mg]?.[col] ?? '').join('\n')
+    navigator.clipboard?.writeText(text)
+      .then(() => {
+        setCopiedCol(col)
+        setTimeout(() => setCopiedCol(c => (c === col ? null : c)), 1500)
+      })
+      .catch(() => {})
+  }
+
+  // Incolla dagli appunti riempiendo la colonna riga per riga (nell'ordine dei gruppi)
+  async function pasteColumn(col) {
+    try {
+      const text = await navigator.clipboard.readText()
+      const lines = text.split(/\r?\n/)
+      setStimuli(prev => {
+        const next = { ...prev }
+        lines.forEach((line, i) => {
+          const mg = STIMULUS_GROUPS[i]
+          if (mg) next[mg] = { ...next[mg], [col]: line }
+        })
+        return next
+      })
+    } catch { /* clipboard non disponibile o permesso negato */ }
+  }
 
   function addPlan() {
     const labels = ['Scheda A', 'Scheda B', 'Scheda C', 'Scheda D', 'Scheda E']
@@ -367,7 +442,7 @@ export function NewWorkoutProgram() {
     if (plans.every(p => p.exercises.length === 0)) { setError('Aggiungi almeno un esercizio'); return }
     setError(null)
     try {
-      await saveProgram.mutateAsync({ clientId, programName, programNotes, programExpiry, plans })
+      await saveProgram.mutateAsync({ clientId, programName, programNotes, programExpiry, stimulusMatrix: stimuli, plans })
       navigate(`/clients/${clientId}?tab=scheda`)
     } catch (err) {
       setError(err.message)
@@ -440,6 +515,62 @@ export function NewWorkoutProgram() {
               onChange={e => setProgramNotes(e.target.value)}
             />
           </div>
+
+          {/* Matrice tipologia di stimolo per gruppo muscolare */}
+          <div className="mb-4 bg-navy-800 border border-navy-700 p-4">
+            <p className="text-xs font-heading uppercase tracking-wider text-slate-500 mb-3">Stimolo per gruppo muscolare</p>
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-sm">
+                <thead>
+                  <tr className="border-b border-navy-700">
+                    <th className="pb-2 pr-3 w-40"></th>
+                    {STIMULUS_COLS.map(({ col, label }) => (
+                      <th key={col} className="text-left text-xs font-heading uppercase tracking-wider text-slate-500 font-bold pb-2 px-1 align-bottom">
+                        <div className="flex items-end justify-between gap-2">
+                          <span>{label}</span>
+                          <div className="flex items-center gap-0.5 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => copyColumn(col)}
+                              title="Copia colonna"
+                              className="text-slate-500 hover:text-gold-400 transition-colors p-0.5"
+                            >
+                              {copiedCol === col ? <Check size={13} className="text-green-400" /> : <Copy size={13} />}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => pasteColumn(col)}
+                              title="Incolla nella colonna"
+                              className="text-slate-500 hover:text-gold-400 transition-colors p-0.5"
+                            >
+                              <ClipboardPaste size={13} />
+                            </button>
+                          </div>
+                        </div>
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {STIMULUS_GROUPS.map(mg => (
+                    <tr key={mg} className="border-b border-navy-900/60 last:border-0">
+                      <td className="py-1.5 pr-3 text-slate-300 whitespace-nowrap align-middle">{mg}</td>
+                      {STIMULUS_COLS.map(({ col }) => (
+                        <td key={col} className="py-1.5 px-1">
+                          <input
+                            className="input text-xs py-1"
+                            value={stimuli[mg]?.[col] ?? ''}
+                            onChange={e => updateStimulus(mg, col, e.target.value)}
+                          />
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
           <VolumeCounter plans={plans} />
           <div className="space-y-3 mt-4">
             {plans.map((plan, planIdx) => {

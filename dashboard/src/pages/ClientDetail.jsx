@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useParams, useSearchParams, Link } from 'react-router-dom'
+import { useParams, useSearchParams, useLocation, Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, ArrowRight, Upload, Plus, ExternalLink, ChevronDown, ChevronUp, Pencil, Check, X, ArrowUp, ArrowDown, Send, Clock, Dumbbell, Salad, Trash2 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
@@ -278,31 +278,57 @@ function expiryInfo(expiresAt) {
   return { label: `Scade il ${fmt(expiresAt)}`,          cls: 'text-slate-500' }
 }
 
+// Campo in sola lettura reso IDENTICO all'input della modifica (stesse
+// classi .input => stessi colori, bordi, dimensioni testo). Mostra il
+// placeholder quando vuoto, esattamente come farebbe l'input.
+function ReadBox({ value, placeholder = '—' }) {
+  const empty = value === null || value === undefined || value === ''
+  return (
+    <div className="input text-xs py-1 whitespace-pre-wrap break-words">
+      {empty ? <span className="text-slate-500">{placeholder}</span> : value}
+    </div>
+  )
+}
+
 function ExerciseViewRow({ ex, onVideoToggle, videoId }) {
   const isVideoOpen = videoId === ex.exercises_catalog?.youtube_id
   return (
     <div>
-      <div className="flex items-start justify-between bg-navy-900 px-4 py-3">
-        <div className="flex-1 min-w-0">
+      <div className="bg-navy-900 px-4 py-3">
+        <div className="flex items-center justify-between mb-2">
           <p className="font-medium text-white text-sm">{ex.exercises_catalog?.name}</p>
-          <p className="text-slate-500 text-xs mt-0.5">
-            {[
-              ex.sets && `${ex.sets} serie`,
-              ex.reps && `${ex.reps} reps`,
-              ex.carico && ex.carico,
-              ex.rest_seconds && `${ex.rest_seconds}s riposo`,
-              ex.cadenza && `cadenza ${ex.cadenza}`,
-            ].filter(Boolean).join(' · ')}
-          </p>
-          {ex.notes && (
-            <p className="text-slate-400 text-xs mt-1 italic">{ex.notes}</p>
+          {ex.exercises_catalog?.youtube_id && (
+            <button onClick={() => onVideoToggle(ex.exercises_catalog.youtube_id)} className="btn-ghost text-xs px-2 py-1">
+              {isVideoOpen ? 'Chiudi' : '▶ Video'}
+            </button>
           )}
         </div>
-        {ex.exercises_catalog?.youtube_id && (
-          <button onClick={() => onVideoToggle(ex.exercises_catalog.youtube_id)} className="btn-ghost text-xs px-2 py-1 ml-3 shrink-0">
-            {isVideoOpen ? 'Chiudi' : '▶ Video'}
-          </button>
-        )}
+        <div className="grid grid-cols-12 gap-1.5 mb-1.5">
+          <div className="col-span-2">
+            <label className="block text-xs text-slate-500 mb-1">Serie</label>
+            <ReadBox value={ex.sets} />
+          </div>
+          <div className="col-span-3">
+            <label className="block text-xs text-slate-500 mb-1">Reps</label>
+            <ReadBox value={ex.reps} />
+          </div>
+          <div className="col-span-3">
+            <label className="block text-xs text-slate-500 mb-1">Reps effettive</label>
+            <ReadBox value={ex.reps_effettive} />
+          </div>
+          <div className="col-span-2">
+            <label className="block text-xs text-slate-500 mb-1">Carico</label>
+            <ReadBox value={ex.carico} />
+          </div>
+          <div className="col-span-2">
+            <label className="block text-xs text-slate-500 mb-1">Riposo (s)</label>
+            <ReadBox value={ex.rest_seconds} />
+          </div>
+        </div>
+        <ReadBox value={ex.cadenza} placeholder="Cadenza (opzionale)" />
+        <div className="mt-1.5">
+          <ReadBox value={ex.notes} placeholder="Note (opzionale)" />
+        </div>
       </div>
       {isVideoOpen && (
         <div className="aspect-video bg-black">
@@ -327,20 +353,24 @@ function ExerciseEditRow({ ex, data, onChange, onMoveUp, onMoveDown, isFirst, is
           </button>
         </div>
       </div>
-      <div className="grid grid-cols-4 gap-1.5 mb-1.5">
-        <div>
+      <div className="grid grid-cols-12 gap-1.5 mb-1.5">
+        <div className="col-span-2">
           <label className="block text-xs text-slate-500 mb-1">Serie</label>
           <input className="input text-xs py-1" value={data.sets ?? ''} onChange={e => onChange('sets', e.target.value)} placeholder="4" />
         </div>
-        <div>
+        <div className="col-span-3">
           <label className="block text-xs text-slate-500 mb-1">Reps</label>
           <input className="input text-xs py-1" value={data.reps ?? ''} onChange={e => onChange('reps', e.target.value)} placeholder="8-10" />
         </div>
-        <div>
+        <div className="col-span-3">
+          <label className="block text-xs text-slate-500 mb-1">Reps effettive</label>
+          <ReadBox value={ex.reps_effettive} />
+        </div>
+        <div className="col-span-2">
           <label className="block text-xs text-slate-500 mb-1">Carico</label>
           <input className="input text-xs py-1" value={data.carico ?? ''} onChange={e => onChange('carico', e.target.value)} placeholder="80kg" />
         </div>
-        <div>
+        <div className="col-span-2">
           <label className="block text-xs text-slate-500 mb-1">Riposo (s)</label>
           <input className="input text-xs py-1" value={data.rest_seconds ?? ''} onChange={e => onChange('rest_seconds', e.target.value)} placeholder="90" />
         </div>
@@ -383,9 +413,24 @@ function VolumeBadges({ counts }) {
 }
 
 function ProgramVolumeCounter({ plans }) {
+  const [open, setOpen] = useState(false)
   const counts = countsFromExercises((plans ?? []).flatMap(p => p.workout_exercises ?? []))
-  if (!Object.keys(counts).length) return null
-  return <div className="mt-1.5"><VolumeBadges counts={counts} /></div>
+  const entries = Object.entries(counts)
+  if (!entries.length) return null
+  const total = entries.reduce((s, [, c]) => s + c, 0)
+  return (
+    <div className="mt-1.5">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-white transition-colors"
+      >
+        {open ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+        <span className="uppercase tracking-wider font-heading">Volume muscolare</span>
+        <span className="text-gold-400 font-bold">{total}</span>
+      </button>
+      {open && <div className="mt-2"><VolumeBadges counts={counts} /></div>}
+    </div>
+  )
 }
 
 function PlanVolumeCounter({ plan }) {
@@ -521,15 +566,15 @@ function PlanCard({ plan, programIsActive, clientId }) {
 
   return (
     <div className="border border-navy-700 bg-navy-900">
-      {/* Plan header */}
-      <div className="flex items-center justify-between px-4 py-3">
+      {/* Plan header — sfondo e accento distinti dal corpo esercizi */}
+      <div className="flex items-center justify-between px-4 py-2.5 bg-navy-800 border-l-2 border-gold-500/60">
         <button
           className="flex items-center gap-3 flex-1 text-left"
           onClick={() => { setExpanded(e => !e); setEditing(false) }}
         >
-          <div>
-            <span className="font-heading font-bold text-white">{plan.name}</span>
-            <span className="text-slate-500 text-xs ml-3">{plan.workout_exercises?.length ?? 0} esercizi</span>
+          <div className="flex items-baseline gap-2.5">
+            <span className="font-heading font-bold uppercase tracking-wider text-gold-400 text-sm">{plan.name}</span>
+            <span className="text-slate-500 text-xs">{plan.workout_exercises?.length ?? 0} esercizi</span>
           </div>
         </button>
         <div className="flex items-center gap-2">
@@ -559,7 +604,7 @@ function PlanCard({ plan, programIsActive, clientId }) {
       {expanded && (
         <div className="border-t border-navy-700">
           <PlanVolumeCounter plan={plan} />
-          <div className="divide-y divide-navy-800">
+          <div className="divide-y divide-navy-700">
           {editing
             ? editOrder.map((id, idx) => {
                 const ex = plan.workout_exercises?.find(e => e.id === id)
@@ -619,10 +664,10 @@ function ProgramCard({ program, clientId }) {
       {/* Header: solo badge + nome */}
       <button className="w-full flex items-center justify-between gap-4" onClick={() => setOpen(o => !o)}>
         <div className="flex items-center gap-3">
-          {program.is_active && <span className="badge-gold">Attivo</span>}
-          <p className="font-heading font-bold text-white text-left">
+          <p className="font-heading font-bold italic uppercase tracking-wide text-white text-lg text-left">
             {program.name ?? 'Programma'}
           </p>
+          {program.is_active && <span className="badge-gold">Attivo</span>}
         </div>
         <div className="flex items-center gap-3">
           <span className="text-slate-500 text-xs">
@@ -640,7 +685,10 @@ function ProgramCard({ program, clientId }) {
           {/* Note: visibili solo se presenti, editing inline */}
           {!editingNotes && notesValue && (
             <div className="flex items-start gap-2">
-              <p className="text-slate-400 text-sm italic flex-1 whitespace-pre-wrap">{notesValue}</p>
+              <p className="text-sm italic flex-1 whitespace-pre-wrap">
+                <span className="text-slate-300">Note programma: </span>
+                <span className="text-slate-400">{notesValue}</span>
+              </p>
               {program.is_active && (
                 <button onClick={() => setEditingNotes(true)} className="p-1 text-slate-600 hover:text-white transition-colors shrink-0 mt-0.5">
                   <Pencil size={12} />
@@ -1262,7 +1310,9 @@ const TABS = [
 
 export function ClientDetail() {
   const { id } = useParams()
+  const location = useLocation()
   const [searchParams, setSearchParams] = useSearchParams()
+  const cameFromHome = location.state?.from === 'home'
   const activeTab = searchParams.get('tab') || 'scheda'
   const { data: client, isLoading } = useClient(id)
   const { data: activeProgram } = useActiveProgram(id)
@@ -1286,8 +1336,8 @@ export function ClientDetail() {
 
   return (
     <div className="p-8">
-      <Link to="/clients" className="btn-ghost mb-6 -ml-2 text-sm">
-        <ArrowLeft size={15} /> Tutti i clienti
+      <Link to={cameFromHome ? '/' : '/clients'} className="btn-ghost mb-6 -ml-2 text-sm">
+        <ArrowLeft size={15} /> {cameFromHome ? 'Home' : 'Tutti i clienti'}
       </Link>
 
       <div className="mb-8 flex items-center justify-between gap-4">
