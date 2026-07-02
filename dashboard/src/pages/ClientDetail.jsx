@@ -196,7 +196,14 @@ function useDietPlans(clientId) {
         .from('diet_plans').select('*').eq('client_id', clientId)
         .order('created_at', { ascending: false })
       if (error) throw error
-      return data
+      // Bucket privato: genera signed URL per ogni PDF
+      const paths = (data ?? []).map(d => d.pdf_url).filter(Boolean)
+      let urlMap = {}
+      if (paths.length) {
+        const { data: signed } = await supabase.storage.from('diet-pdfs').createSignedUrls(paths, 3600)
+        urlMap = Object.fromEntries((signed ?? []).map(s => [s.path, s.signedUrl]))
+      }
+      return (data ?? []).map(d => ({ ...d, signedUrl: urlMap[d.pdf_url] ?? null }))
     },
   })
 }
@@ -787,10 +794,6 @@ function TabDieta({ clientId }) {
   const [planExpiry, setPlanExpiry] = useState('')
   const [uploadError, setUploadError] = useState(null)
 
-  function getPdfUrl(path) {
-    return supabase.storage.from('diet-pdfs').getPublicUrl(path).data.publicUrl
-  }
-
   async function handleUpload(e) {
     const file = e.target.files?.[0]
     if (!file || !planName.trim()) return
@@ -891,12 +894,12 @@ function TabDieta({ clientId }) {
               <span className="badge-gold mr-2">Attiva</span>
               <span className="font-heading font-bold text-lg text-white">{activeDiet.name}</span>
             </div>
-            <a href={getPdfUrl(activeDiet.pdf_url)} target="_blank" rel="noopener noreferrer" className="btn-ghost text-sm">
+            <a href={activeDiet.signedUrl} target="_blank" rel="noopener noreferrer" className="btn-ghost text-sm">
               <ExternalLink size={14} /> Apri PDF
             </a>
           </div>
 
-          <iframe src={getPdfUrl(activeDiet.pdf_url)} className="w-full h-96 border-0" title="Dieta" />
+          <iframe src={activeDiet.signedUrl} className="w-full h-96 border-0" title="Dieta" />
         </div>
       )}
 
@@ -915,7 +918,7 @@ function TabDieta({ clientId }) {
                   {fmt(diet.created_at)}{diet.expires_at ? ` — ${fmt(diet.expires_at)}` : ''}
                 </span>
               </div>
-              <a href={getPdfUrl(diet.pdf_url)} target="_blank" rel="noopener noreferrer" className="btn-ghost text-xs px-3 py-1.5">
+              <a href={diet.signedUrl} target="_blank" rel="noopener noreferrer" className="btn-ghost text-xs px-3 py-1.5">
                 <ExternalLink size={12} /> PDF
               </a>
             </div>
