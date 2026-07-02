@@ -1,4 +1,4 @@
-import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { NavLink, Link, Outlet, useNavigate } from 'react-router-dom'
 import { Users, Home, Dumbbell, LogOut, FolderOpen, Settings } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
 
@@ -25,9 +25,9 @@ export function Layout() {
       <aside className="w-56 bg-navy-950 flex flex-col border-r border-navy-700 shrink-0">
         {/* Logo */}
         <div className="px-6 py-6 border-b border-navy-700">
-          <span className="font-heading font-bold italic text-2xl text-gold-500 uppercase tracking-wider">
+          <Link to="/" className="font-heading font-bold italic text-2xl text-gold-500 hover:text-gold-400 transition-colors uppercase tracking-wider">
             FitCoach
-          </span>
+          </Link>
         </div>
 
         {/* Nav */}
