@@ -93,7 +93,13 @@ Deno.serve(async (req) => {
       })
     }
 
-    return new Response(JSON.stringify({ link: data.properties?.action_link, user: data.user }), {
+    // Link alla NOSTRA pagina con token_hash: verrà verificato lato client
+    // (verifyOtp) solo quando l'utente reale apre la pagina. Così le anteprime
+    // di WhatsApp/email non consumano il token monouso.
+    const shareLink = (redirect_to && data.properties?.hashed_token)
+      ? `${redirect_to}?token_hash=${encodeURIComponent(data.properties.hashed_token)}&type=invite`
+      : data.properties?.action_link
+    return new Response(JSON.stringify({ link: shareLink, user: data.user }), {
       status: 200,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     })

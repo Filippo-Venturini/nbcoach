@@ -15,11 +15,25 @@ export function SetPassword() {
   const [tokenError, setTokenError] = useState(false)
 
   useEffect(() => {
-    // Cattura subito i parametri dall'hash prima che vengano consumati dal client
+    // Flusso principale: link alla nostra pagina con token_hash nei query param.
+    // Verifichiamo qui (verifyOtp) SOLO quando l'utente reale apre la pagina, così
+    // le anteprime di WhatsApp/email (che non eseguono JS) non consumano il token.
+    const qp = new URLSearchParams(window.location.search)
+    const tokenHash = qp.get('token_hash')
+    const qType = qp.get('type')
+
+    if (tokenHash && qType) {
+      supabase.auth.verifyOtp({ type: qType, token_hash: tokenHash }).then(({ error }) => {
+        if (error) setTokenError(true)
+        else setType(qType)
+      })
+      return
+    }
+
+    // Fallback: vecchio flusso basato sull'hash (#access_token / #error)
     const hp = new URLSearchParams(window.location.hash.replace('#', ''))
     const hashType = hp.get('type')
 
-    // Link non valido/scaduto: Supabase reindirizza con un errore nell'hash
     if (hp.get('error') || hp.get('error_code')) {
       setTokenError(true)
       return
@@ -31,7 +45,6 @@ export function SetPassword() {
       }
     })
 
-    // Timeout: se dopo 6s non arriva né sessione né errore, consideriamo il link scaduto/invalido
     const timeout = setTimeout(() => {
       setType(t => {
         if (!t) setTokenError(true)
