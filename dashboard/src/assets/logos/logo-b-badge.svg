@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 166 48" role="img" aria-label="NBCoach">
+  <rect x="1" y="4" width="40" height="40" rx="9" fill="#0D1628" stroke="#F0A800" stroke-width="1.8"/>
+  <text x="7" y="34" font-family="Barlow Condensed, sans-serif" font-style="italic" font-weight="800" font-size="26" fill="#F0A800">N<tspan fill="#ffffff">B</tspan></text>
+  <g transform="translate(22,13) scale(0.52)" fill="none" stroke="#F5B832" stroke-width="2.6" stroke-linecap="round">
+    <path d="M10,0 C3,7 3,13 10,20 C17,27 17,33 10,40"/>
+    <path d="M10,0 C17,7 17,13 10,20 C3,27 3,33 10,40"/>
+    <line x1="5.5" y1="6" x2="14.5" y2="6"/><line x1="5.5" y1="14" x2="14.5" y2="14"/>
+    <line x1="5.5" y1="26" x2="14.5" y2="26"/><line x1="5.5" y1="34" x2="14.5" y2="34"/>
+  </g>
+  <text x="50" y="20" font-family="Barlow Condensed, sans-serif" font-style="italic" font-weight="800" font-size="20" letter-spacing="0.5" fill="#F0A800">NB<tspan fill="#ffffff">COACH</tspan></text>
+  <text x="51" y="31" font-family="Inter, sans-serif" font-weight="600" font-size="6.4" letter-spacing="1.4" fill="#CBD5E1">DOTT. NICOLA BAIOCCHI</text>
+  <text x="51" y="40" font-family="Inter, sans-serif" font-weight="600" font-size="6" letter-spacing="1.6" fill="#8194ad">COACHING &amp; NUTRIZIONE</text>
+</svg>

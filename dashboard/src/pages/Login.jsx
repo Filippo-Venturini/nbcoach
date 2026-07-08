@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
+import { Brand } from '../components/Brand'
 
 export function Login() {
   const { signIn } = useAuth()
@@ -29,17 +30,15 @@ export function Login() {
     <div className="min-h-screen bg-navy-900 flex items-center justify-center px-4">
       <div className="w-full max-w-sm">
         {/* Header */}
-        <div className="text-center mb-10">
-          <h1 className="font-heading font-bold italic text-5xl text-gold-500 uppercase tracking-wider">
-            FitCoach
-          </h1>
-          <p className="text-slate-400 text-sm mt-2 uppercase tracking-widest font-heading">
-            Area riservata PT
-          </p>
+        <div className="text-center mb-8">
+          <Brand size="lg" align="center" className="mx-auto block" />
         </div>
 
         {/* Form */}
         <form onSubmit={handleSubmit} className="card space-y-4">
+          <p className="text-slate-400 text-sm uppercase tracking-widest font-heading text-center pb-1">
+            Area riservata PT
+          </p>
           <div>
             <label className="block text-xs font-heading font-bold uppercase tracking-wider text-slate-400 mb-1.5">
               Email

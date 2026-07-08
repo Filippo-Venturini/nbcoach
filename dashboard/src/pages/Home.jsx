@@ -197,7 +197,7 @@ function ExpiryClientRow({ client }) {
 }
 
 // Sezione collassabile con header a card, stile catalogo esercizi
-function CollapsibleSection({ icon: Icon, iconColor, title, count, defaultOpen = true, children }) {
+function CollapsibleSection({ icon: Icon, iconColor, title, count, defaultOpen = false, children }) {
   const [open, setOpen] = useState(defaultOpen)
   return (
     <div className="mb-4">
@@ -254,7 +254,7 @@ export function Home() {
     <div className="p-8">
       {/* Header */}
       <div className="pb-6 border-b border-navy-700 mb-6">
-        <h1 className="font-heading font-bold italic text-4xl text-white uppercase">
+        <h1 className="font-heading font-bold italic text-3xl text-white uppercase">
           Ciao,{' '}
           <span className="text-gold-500">
             {profile?.full_name?.split(' ')[0] ?? 'PT'}

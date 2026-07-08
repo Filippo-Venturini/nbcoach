@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 118 46" role="img" aria-label="NBCoach">
+  <text x="4" y="36" font-family="Barlow Condensed, sans-serif" font-style="italic" font-weight="800" font-size="42" fill="#ffffff">N</text>
+  <g transform="translate(58,4) scale(0.85)">
+    <path fill="none" stroke="#F0A800" stroke-width="1.8" d="M10,0 C3,7 3,13 10,20 C17,27 17,33 10,40"/>
+    <path fill="none" stroke="#F0A800" stroke-width="1.8" d="M10,0 C17,7 17,13 10,20 C3,27 3,33 10,40"/>
+    <g fill="#F0A800"><circle cx="10" cy="0" r="2.2"/><circle cx="10" cy="20" r="2.2"/><circle cx="10" cy="40" r="2.2"/></g>
+  </g>
+  <text x="76" y="36" font-family="Barlow Condensed, sans-serif" font-style="italic" font-weight="800" font-size="42" fill="#F0A800">B</text>
+</svg>

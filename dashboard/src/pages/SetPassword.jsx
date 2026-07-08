@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Eye, EyeOff, CheckCircle } from 'lucide-react'
 import { supabase } from '../lib/supabase'
+import { Brand } from '../components/Brand'
 
 export function SetPassword() {
   const [password, setPassword]     = useState('')
@@ -63,9 +64,7 @@ export function SetPassword() {
     return (
       <div className="min-h-screen bg-navy-900 flex items-center justify-center px-4">
         <div className="w-full max-w-sm text-center">
-          <h1 className="font-heading font-bold italic text-5xl text-gold-500 uppercase tracking-wider mb-10">
-            FitCoach
-          </h1>
+          <Brand size="lg" align="center" className="mx-auto block mb-10" />
           <div className="card space-y-4">
             <p className="text-2xl">⚠️</p>
             <p className="text-white font-heading font-bold uppercase text-lg">Link non valido</p>
@@ -83,9 +82,7 @@ export function SetPassword() {
     return (
       <div className="min-h-screen bg-navy-900 flex items-center justify-center px-4">
         <div className="w-full max-w-sm text-center">
-          <h1 className="font-heading font-bold italic text-5xl text-gold-500 uppercase tracking-wider mb-10">
-            FitCoach
-          </h1>
+          <Brand size="lg" align="center" className="mx-auto block mb-10" />
           <div className="card">
             <div className="flex items-center justify-center gap-3 py-2">
               <div className="w-4 h-4 border-2 border-gold-500 border-t-transparent rounded-full animate-spin" />
@@ -102,14 +99,12 @@ export function SetPassword() {
     return (
       <div className="min-h-screen bg-navy-900 flex items-center justify-center px-4">
         <div className="w-full max-w-sm text-center">
-          <h1 className="font-heading font-bold italic text-5xl text-gold-500 uppercase tracking-wider mb-10">
-            FitCoach
-          </h1>
+          <Brand size="lg" align="center" className="mx-auto block mb-10" />
           <div className="card space-y-4">
             <CheckCircle className="text-emerald-400 mx-auto" size={40} />
             <p className="text-white font-heading font-bold uppercase text-lg">Password impostata</p>
             <p className="text-slate-400 text-sm">
-              Ora puoi accedere all'app FitCoach con la tua email e la password appena scelta.
+              Ora puoi accedere all'app NBCoach con la tua email e la password appena scelta.
             </p>
           </div>
         </div>
@@ -121,15 +116,13 @@ export function SetPassword() {
   return (
     <div className="min-h-screen bg-navy-900 flex items-center justify-center px-4">
       <div className="w-full max-w-sm">
-        <div className="text-center mb-10">
-          <h1 className="font-heading font-bold italic text-5xl text-gold-500 uppercase tracking-wider">
-            FitCoach
-          </h1>
-          <p className="text-slate-400 text-sm mt-2 uppercase tracking-widest font-heading">
-            {type === 'invite' ? 'Attiva il tuo account' : 'Recupero password'}
-          </p>
+        <div className="text-center mb-8">
+          <Brand size="lg" align="center" className="mx-auto block" />
         </div>
 
+        <p className="text-slate-400 text-sm mb-4 uppercase tracking-widest font-heading text-center">
+          {type === 'invite' ? 'Attiva il tuo account' : 'Recupero password'}
+        </p>
         <form onSubmit={handleSubmit} className="card space-y-5">
           <p className="text-slate-400 text-sm">
             {type === 'invite'

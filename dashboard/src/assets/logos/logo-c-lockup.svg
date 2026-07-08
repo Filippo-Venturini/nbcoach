@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 172 46" role="img" aria-label="NBCoach">
+  <g transform="translate(2,4) scale(0.92)" fill="none" stroke="#F5B832" stroke-width="1.5" stroke-linecap="round">
+    <path d="M10,0 C3,7 3,13 10,20 C17,27 17,33 10,40"/>
+    <path d="M10,0 C17,7 17,13 10,20 C3,27 3,33 10,40"/>
+    <line x1="5.5" y1="6" x2="14.5" y2="6"/><line x1="5.5" y1="14" x2="14.5" y2="14"/>
+    <line x1="5.5" y1="26" x2="14.5" y2="26"/><line x1="5.5" y1="34" x2="14.5" y2="34"/>
+  </g>
+  <g fill="#F0A800"><circle cx="12" cy="4" r="1.8"/><circle cx="12" cy="42" r="1.8"/></g>
+  <text x="26" y="35" font-family="Barlow Condensed, sans-serif" font-style="italic" font-weight="800" font-size="40" fill="#F0A800">NB</text>
+  <line x1="88" y1="9" x2="88" y2="37" stroke="#182844" stroke-width="2"/>
+  <text x="97" y="24" font-family="Barlow Condensed, sans-serif" font-style="italic" font-weight="800" font-size="19" letter-spacing="0.5" fill="#ffffff">NBCOACH</text>
+  <text x="98" y="35" font-family="Inter, sans-serif" font-weight="600" font-size="6" letter-spacing="2" fill="#8194ad">COACHING &amp; NUTRIZIONE</text>
+</svg>

@@ -1,6 +1,7 @@
 import { NavLink, Link, Outlet, useNavigate } from 'react-router-dom'
 import { Users, Home, Dumbbell, LogOut, FolderOpen, Settings } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
+import { Brand } from './Brand'
 
 const navItems = [
   { to: '/',           label: 'HOME',         icon: Home,     end: true },
@@ -22,11 +23,11 @@ export function Layout() {
   return (
     <div className="flex min-h-screen">
       {/* Sidebar */}
-      <aside className="w-56 bg-navy-950 flex flex-col border-r border-navy-700 shrink-0">
+      <aside className="w-64 bg-navy-950 flex flex-col border-r border-navy-700 shrink-0">
         {/* Logo */}
-        <div className="px-6 py-6 border-b border-navy-700">
-          <Link to="/" className="font-heading font-bold italic text-2xl text-gold-500 hover:text-gold-400 transition-colors uppercase tracking-wider">
-            FitCoach
+        <div className="px-5 py-6 border-b border-navy-700">
+          <Link to="/" className="hover:opacity-90 transition-opacity">
+            <Brand size="md" captionSize={6.0} />
           </Link>
         </div>
 

@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 122 46" role="img" aria-label="NBCoach">
+  <g transform="translate(60,3) scale(0.95)" fill="none" stroke="#F5B832" stroke-width="1.6" stroke-linecap="round">
+    <path d="M10,0 C3,7 3,13 10,20 C17,27 17,33 10,40"/>
+    <path d="M10,0 C17,7 17,13 10,20 C3,27 3,33 10,40"/>
+    <line x1="5.5" y1="6" x2="14.5" y2="6"/><line x1="5.5" y1="14" x2="14.5" y2="14"/>
+    <line x1="5.5" y1="26" x2="14.5" y2="26"/><line x1="5.5" y1="34" x2="14.5" y2="34"/>
+  </g>
+  <g fill="#F0A800"><circle cx="70" cy="3" r="2"/><circle cx="70" cy="43" r="2"/></g>
+  <text x="4" y="36" font-family="Barlow Condensed, sans-serif" font-style="italic" font-weight="800" font-size="42" fill="#F0A800">N</text>
+  <text x="78" y="36" font-family="Barlow Condensed, sans-serif" font-style="italic" font-weight="800" font-size="42" fill="#F0A800">B</text>
+</svg>
