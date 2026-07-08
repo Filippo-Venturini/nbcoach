@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react'
-import { useParams, useSearchParams, useLocation, Link } from 'react-router-dom'
+import { useParams, useSearchParams, useLocation, useNavigate, Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, ArrowRight, Upload, Plus, ExternalLink, ChevronDown, ChevronUp, Pencil, Check, X, ArrowUp, ArrowDown, Send, Clock, Dumbbell, Salad, Trash2, KeyRound, Copy } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { APP_URL } from '../lib/config'
+import { ConfirmModal } from '../components/ConfirmModal'
 
 // ─── Data hooks ───────────────────────────────────────────────
 
@@ -1387,6 +1388,32 @@ function ResetPasswordModal({ client, onClose }) {
   )
 }
 
+function useDeleteClient() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (clientId) => {
+      const { data, error } = await supabase.functions.invoke('delete-client', {
+        body: { client_id: clientId },
+      })
+      if (error) {
+        let message = error.message
+        try {
+          const body = await error.context?.json?.()
+          if (body?.error) message = body.error
+        } catch { /* corpo non leggibile */ }
+        throw new Error(message)
+      }
+      if (data?.error) throw new Error(data.error)
+      return data
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['clients'] })
+      qc.invalidateQueries({ queryKey: ['home-kpis'] })
+      qc.invalidateQueries({ queryKey: ['expiring-items'] })
+    },
+  })
+}
+
 export function ClientDetail() {
   const { id } = useParams()
   const location = useLocation()
@@ -1403,6 +1430,20 @@ export function ClientDetail() {
 
   const pending = client?.questionnaire_pending ?? false
   const [showReset, setShowReset] = useState(false)
+  const [showDelete, setShowDelete] = useState(false)
+  const [deleteError, setDeleteError] = useState(null)
+  const navigate = useNavigate()
+  const deleteClient = useDeleteClient()
+
+  async function handleDelete() {
+    setDeleteError(null)
+    try {
+      await deleteClient.mutateAsync(id)
+      navigate('/clients', { replace: true })
+    } catch (err) {
+      setDeleteError('Errore: ' + (err.message || 'eliminazione non riuscita'))
+    }
+  }
 
   async function handleSendQuestionnaire() {
     await setQuestionnaire.mutateAsync({ clientId: id, pending: true })
@@ -1450,6 +1491,13 @@ export function ClientDetail() {
           >
             <KeyRound size={13} /> Reset password
           </button>
+          <button
+            onClick={() => setShowDelete(true)}
+            className="btn-ghost text-xs px-3 py-1.5 text-red-400 hover:text-red-300"
+            title="Elimina definitivamente il cliente e tutti i suoi dati"
+          >
+            <Trash2 size={13} /> Elimina
+          </button>
           {pending && (
             <span className="flex items-center gap-1.5 text-amber-400 text-xs font-heading uppercase tracking-wider">
               <Clock size={13} /> In attesa
@@ -1481,6 +1529,17 @@ export function ClientDetail() {
 
       {showReset && client && (
         <ResetPasswordModal client={client} onClose={() => setShowReset(false)} />
+      )}
+
+      {showDelete && (
+        <ConfirmModal
+          message="Eliminare questo cliente?"
+          detail={deleteError ?? `Verranno eliminati definitivamente ${client?.full_name || 'il cliente'} e tutti i suoi dati: schede, diete, foto e dati giornalieri. L'azione è irreversibile.`}
+          confirmLabel="ELIMINA"
+          isPending={deleteClient.isPending}
+          onConfirm={handleDelete}
+          onCancel={() => { setShowDelete(false); setDeleteError(null) }}
+        />
       )}
 
       {/* Scadenze programma e dieta */}
