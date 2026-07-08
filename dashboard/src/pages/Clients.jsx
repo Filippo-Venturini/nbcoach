@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { UserPlus, ChevronRight, Search, Copy, Check } from 'lucide-react'
 import { supabase } from '../lib/supabase'
+import { APP_URL } from '../lib/config'
 
 function useClients() {
   return useQuery({
@@ -53,7 +54,7 @@ function useCreateClient() {
   return useMutation({
     mutationFn: async ({ email, fullName }) => {
       const { data, error } = await supabase.functions.invoke('invite-client', {
-        body: { email, full_name: fullName, redirect_to: `${window.location.origin}/set-password` },
+        body: { email, full_name: fullName, redirect_to: `${APP_URL}/set-password` },
       })
       if (error) {
         // Su risposta non-2xx supabase-js dà un messaggio generico: leggiamo

@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react'
 import { useParams, useSearchParams, useLocation, Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, ArrowRight, Upload, Plus, ExternalLink, ChevronDown, ChevronUp, Pencil, Check, X, ArrowUp, ArrowDown, Send, Clock, Dumbbell, Salad, Trash2 } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Upload, Plus, ExternalLink, ChevronDown, ChevronUp, Pencil, Check, X, ArrowUp, ArrowDown, Send, Clock, Dumbbell, Salad, Trash2, KeyRound, Copy } from 'lucide-react'
 import { supabase } from '../lib/supabase'
+import { APP_URL } from '../lib/config'
 
 // ─── Data hooks ───────────────────────────────────────────────
 
@@ -1311,6 +1312,81 @@ const TABS = [
   { id: 'dati',   label: 'DATI' },
 ]
 
+// ─── Reset password: link generato dal PT, senza email ────────
+function ResetPasswordModal({ client, onClose }) {
+  const [link, setLink]       = useState(null)
+  const [error, setError]     = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [copied, setCopied]   = useState(false)
+
+  async function generate() {
+    setError(null)
+    setLoading(true)
+    try {
+      const { data, error } = await supabase.functions.invoke('reset-password', {
+        body: { email: client.email, redirect_to: `${APP_URL}/set-password` },
+      })
+      if (error) {
+        let message = error.message
+        try {
+          const body = await error.context?.json?.()
+          if (body?.error) message = body.error
+        } catch { /* corpo non leggibile */ }
+        throw new Error(message)
+      }
+      if (data?.error) throw new Error(data.error)
+      setLink(data?.link ?? null)
+    } catch (err) {
+      setError(err.message || 'Errore durante la generazione del link')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  function copyLink() {
+    if (!link) return
+    navigator.clipboard?.writeText(link)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1500)
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center px-4 z-50" onClick={onClose}>
+      <div className="card w-full max-w-md" onClick={e => e.stopPropagation()}>
+        <h3 className="font-heading font-bold italic text-xl text-white uppercase tracking-wide mb-2">
+          Reset password
+        </h3>
+        <p className="text-slate-400 text-sm mb-5">
+          Genera un link di reset per <span className="text-white">{client.full_name || client.email}</span> e
+          inviaglielo su un canale sicuro (es. WhatsApp). Aprendolo potrà impostare una nuova password.
+          Il link scade ed è monouso.
+        </p>
+
+        {error && <p className="text-red-400 text-sm bg-red-900/20 px-4 py-2.5 mb-4">{error}</p>}
+
+        {link ? (
+          <>
+            <div className="flex gap-2">
+              <input readOnly value={link} className="input flex-1 text-xs" onFocus={e => e.target.select()} />
+              <button onClick={copyLink} className="btn-primary px-3 shrink-0" title="Copia link">
+                {copied ? <Check size={16} /> : <Copy size={16} />}
+              </button>
+            </div>
+            <button onClick={onClose} className="btn-ghost text-sm w-full justify-center mt-3">Chiudi</button>
+          </>
+        ) : (
+          <div className="flex justify-end gap-2">
+            <button onClick={onClose} className="btn-ghost text-sm">Annulla</button>
+            <button onClick={generate} disabled={loading} className="btn-primary text-sm disabled:opacity-50">
+              {loading ? 'GENERO...' : 'GENERA LINK'}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export function ClientDetail() {
   const { id } = useParams()
   const location = useLocation()
@@ -1326,6 +1402,7 @@ export function ClientDetail() {
   const updateDietExpiry = useUpdateDietExpiry()
 
   const pending = client?.questionnaire_pending ?? false
+  const [showReset, setShowReset] = useState(false)
 
   async function handleSendQuestionnaire() {
     await setQuestionnaire.mutateAsync({ clientId: id, pending: true })
@@ -1364,8 +1441,15 @@ export function ClientDetail() {
           </div>
         </div>
 
-        {/* Questionario */}
+        {/* Azioni */}
         <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={() => setShowReset(true)}
+            className="btn-ghost text-xs px-3 py-1.5"
+            title="Genera un link per reimpostare la password del cliente"
+          >
+            <KeyRound size={13} /> Reset password
+          </button>
           {pending && (
             <span className="flex items-center gap-1.5 text-amber-400 text-xs font-heading uppercase tracking-wider">
               <Clock size={13} /> In attesa
@@ -1394,6 +1478,10 @@ export function ClientDetail() {
           }
         </div>
       </div>
+
+      {showReset && client && (
+        <ResetPasswordModal client={client} onClose={() => setShowReset(false)} />
+      )}
 
       {/* Scadenze programma e dieta */}
       <div className="grid grid-cols-2 gap-3 mb-6">

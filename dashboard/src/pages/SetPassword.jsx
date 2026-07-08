@@ -15,14 +15,23 @@ export function SetPassword() {
   const [tokenError, setTokenError] = useState(false)
 
   useEffect(() => {
+    // Cattura subito i parametri dall'hash prima che vengano consumati dal client
+    const hp = new URLSearchParams(window.location.hash.replace('#', ''))
+    const hashType = hp.get('type')
+
+    // Link non valido/scaduto: Supabase reindirizza con un errore nell'hash
+    if (hp.get('error') || hp.get('error_code')) {
+      setTokenError(true)
+      return
+    }
+
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
       if (event === 'PASSWORD_RECOVERY' || event === 'SIGNED_IN') {
-        const params = new URLSearchParams(window.location.hash.replace('#', ''))
-        setType(params.get('type') ?? 'recovery')
+        setType(hashType ?? (event === 'PASSWORD_RECOVERY' ? 'recovery' : 'invite'))
       }
     })
 
-    // Timeout: se dopo 6s il token non è arrivato, il link è scaduto/invalido
+    // Timeout: se dopo 6s non arriva né sessione né errore, consideriamo il link scaduto/invalido
     const timeout = setTimeout(() => {
       setType(t => {
         if (!t) setTokenError(true)
@@ -120,9 +129,11 @@ export function SetPassword() {
           <Brand size="lg" align="center" className="mx-auto block" />
         </div>
 
-        <p className="text-slate-400 text-sm mb-4 uppercase tracking-widest font-heading text-center">
-          {type === 'invite' ? 'Attiva il tuo account' : 'Recupero password'}
-        </p>
+        {type === 'invite' && (
+          <p className="text-slate-400 text-sm mb-4 uppercase tracking-widest font-heading text-center">
+            Attiva il tuo account
+          </p>
+        )}
         <form onSubmit={handleSubmit} className="card space-y-5">
           <p className="text-slate-400 text-sm">
             {type === 'invite'
