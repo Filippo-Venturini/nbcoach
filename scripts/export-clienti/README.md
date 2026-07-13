@@ -23,13 +23,23 @@ FitCoach-Backup/
 
 Copia `.env.example` in `.env`, nella stessa cartella dell'eseguibile, e compila:
 - `SUPABASE_URL` — già impostato
-- `SUPABASE_SERVICE_ROLE_KEY` — Supabase → Project Settings → API → chiave **service_role** (SEGRETA)
-- `OUTPUT_DIR` — cartella dove salvare il backup. **Lascialo vuoto** per creare
-  automaticamente una cartella `export/` accanto all'eseguibile.
+- `SUPABASE_SECRET_KEY` — Supabase → Project Settings → API Keys → **Secret key**
+  (formato `sb_secret_...`, SEGRETA). In alternativa la vecchia `SUPABASE_SERVICE_ROLE_KEY`.
+- `OUTPUT_DIR` — cartella dove salvare il backup. Puoi **lasciarlo vuoto**: alla
+  prima esecuzione l'app chiede dove salvare (puoi **trascinare la cartella**
+  nella finestra) e ricorda la scelta scrivendola nel `.env`. Per cambiare cartella
+  basta modificare o cancellare questa riga.
+
+## Avanzamento e file mancanti
+
+Durante il download viene mostrata una **barra di avanzamento con percentuale**
+separata per foto e diete. Se qualche file risulta a database ma non nello
+storage (record orfani), l'export continua e salva l'elenco in
+`file-mancanti.txt` dentro la cartella di destinazione.
 
 ## Sicurezza
 
-La **service role key è segreta** (accesso completo al database): tienila solo
+La **secret key è segreta** (accesso completo al database): tienila solo
 sul PC di chi esegue il backup, non condividerla e non caricarla online.
 Il file `.env` non va su git. Il binario invece NON contiene la chiave: è
 sempre e solo nel `.env`, quindi puoi consegnare il binario e il `.env` insieme.

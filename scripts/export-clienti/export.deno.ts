@@ -5,7 +5,7 @@
 // ============================================================
 
 import { createClient } from "npm:@supabase/supabase-js@2"
-import { promises as fs, existsSync, readFileSync } from "node:fs"
+import { promises as fs, existsSync, readFileSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { Buffer } from "node:buffer"
 
@@ -32,13 +32,45 @@ loadEnv()
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")
 // Nuova "secret key" (sb_secret_...) oppure, per retro-compatibilità, la vecchia service_role
 const SERVICE_KEY = Deno.env.get("SUPABASE_SECRET_KEY") || Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")
-const OUT = Deno.env.get("OUTPUT_DIR") || path.join(BASE, "export")
 
 if (!SUPABASE_URL || !SERVICE_KEY) {
   console.error("ERRORE: imposta SUPABASE_URL e SUPABASE_SECRET_KEY nel file .env accanto all'app")
   prompt("Premi Invio per chiudere...")
   Deno.exit(1)
 }
+
+// ---- Cartella di destinazione -----------------------------------------------
+// 1) se OUTPUT_DIR è nel .env la uso; 2) altrimenti la chiedo (si può TRASCINARE
+//    la cartella nella finestra) e la salvo nel .env per le volte successive.
+function unescapePath(raw) {
+  let s = (raw || "").trim().replace(/^["']|["']$/g, "")
+  // Su Mac/Linux trascinando una cartella nel Terminale gli spazi arrivano come "\ "
+  if (Deno.build.os !== "windows") s = s.replace(/\\(.)/g, "$1")
+  return s.trim()
+}
+function saveOutputDir(dir) {
+  try {
+    const envPath = path.join(BASE, ".env")
+    let txt = existsSync(envPath) ? readFileSync(envPath, "utf8") : ""
+    const line = `OUTPUT_DIR=${dir}`
+    if (/^\s*OUTPUT_DIR\s*=.*$/m.test(txt)) txt = txt.replace(/^\s*OUTPUT_DIR\s*=.*$/m, line)
+    else txt = txt.replace(/\s*$/, "") + "\n" + line + "\n"
+    writeFileSync(envPath, txt)
+  } catch { /* se non riesco a scrivere, pazienza: uso comunque la cartella scelta */ }
+}
+function resolveOutputDir() {
+  const fromEnv = (Deno.env.get("OUTPUT_DIR") || "").trim()
+  if (fromEnv) return fromEnv
+  console.log("Dove vuoi salvare il backup?")
+  const ans = prompt('Trascina qui la cartella (o incolla il percorso) e premi Invio.\nInvio a vuoto = crea "export" accanto all\'app:')
+  const chosen = unescapePath(ans)
+  if (!chosen) return path.join(BASE, "export")
+  saveOutputDir(chosen)
+  console.log(`Ho salvato questa cartella nel file .env. La prossima volta userò questa senza chiedere.`)
+  console.log(`(Per cambiarla, modifica o cancella la riga OUTPUT_DIR nel file .env.)\n`)
+  return chosen
+}
+const OUT = resolveOutputDir()
 
 const supabase = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } })
 
@@ -65,12 +97,14 @@ async function fetchAll(table, columns) {
   return rows
 }
 
+const missing = [] // file a DB ma non trovati nello storage (record orfani)
+
 async function download(bucket, storagePath, destFile) {
   if (!storagePath) return "skip"
   if (existsSync(destFile)) return "skip"
   const { data, error } = await supabase.storage.from(bucket).download(storagePath)
   if (error || !data) {
-    console.warn(`  ! impossibile scaricare ${bucket}/${storagePath}: ${error?.message ?? "vuoto"}`)
+    missing.push(`${bucket}/${storagePath}\t${error?.message ?? "vuoto"}`)
     return "error"
   }
   const buf = Buffer.from(await data.arrayBuffer())
@@ -79,37 +113,103 @@ async function download(bucket, storagePath, destFile) {
   return "ok"
 }
 
+// Barra di avanzamento (per CLIENTI) aggiornata sulla stessa riga.
+const enc = new TextEncoder()
+function shortName(s, n = 28) {
+  s = s || ""
+  return s.length > n ? s.slice(0, n - 1) + "…" : s
+}
+function showClientProgress(done, total, upToDate, current) {
+  const pct = total ? Math.round((done / total) * 100) : 100
+  const bars = Math.round(pct / 5) // 20 blocchi
+  const bar = "#".repeat(bars) + "-".repeat(20 - bars)
+  const line = `  Clienti [${bar}] ${pct}%  aggiornati ${done}/${total}  (già a posto: ${upToDate})  → ${shortName(current)}`
+  Deno.stdout.writeSync(enc.encode("\r" + line.padEnd(100)))
+}
+
 async function main() {
-  console.log("FitCoach — export foto e diete")
+  console.log("\nFitCoach — export foto e diete")
   console.log("Cartella di destinazione:", OUT)
   console.log("Connessione a Supabase...\n")
 
-  const clients = await fetchAll("profiles", "id, full_name, email")
+  const profiles = await fetchAll("profiles", "id, full_name, email")
   const nameById = new Map()
-  for (const c of clients) nameById.set(c.id, sanitize(c.full_name || c.email || c.id))
+  for (const c of profiles) nameById.set(c.id, sanitize(c.full_name || c.email || c.id))
 
   const photos = await fetchAll("progress_photos", "client_id, photo_url, created_at")
   const diets = await fetchAll("diet_plans", "client_id, name, pdf_url, created_at")
-  console.log(`Trovate ${photos.length} foto e ${diets.length} diete per ${clients.length} clienti.\n`)
 
-  const stats = { ok: 0, skip: 0, error: 0 }
-  const bump = (r) => { stats[r]++ }
-
-  console.log("Scarico le foto...")
+  // Raggruppo i file attesi per cliente (foto + diete).
+  const byClient = new Map()
+  const ensure = (cid) => {
+    if (!byClient.has(cid)) byClient.set(cid, { name: nameById.get(cid) || sanitize(cid), items: [] })
+    return byClient.get(cid)
+  }
   for (const p of photos) {
-    const folder = nameById.get(p.client_id) || sanitize(p.client_id)
-    const dest = path.join(OUT, folder, "foto", `${dateKey(p.created_at)}_${path.basename(p.photo_url)}`)
-    bump(await download("progress-photos", p.photo_url, dest))
+    if (!p.photo_url) continue
+    const c = ensure(p.client_id)
+    c.items.push({
+      bucket: "progress-photos",
+      storagePath: p.photo_url,
+      dest: path.join(OUT, c.name, "foto", `${dateKey(p.created_at)}_${path.basename(p.photo_url)}`),
+    })
   }
-
-  console.log("Scarico le diete...")
   for (const d of diets) {
-    const folder = nameById.get(d.client_id) || sanitize(d.client_id)
-    const dest = path.join(OUT, folder, "diete", `${dateKey(d.created_at)}_${sanitize(d.name)}.pdf`)
-    bump(await download("diet-pdfs", d.pdf_url, dest))
+    if (!d.pdf_url) continue
+    const c = ensure(d.client_id)
+    c.items.push({
+      bucket: "diet-pdfs",
+      storagePath: d.pdf_url,
+      dest: path.join(OUT, c.name, "diete", `${dateKey(d.created_at)}_${sanitize(d.name)}.pdf`),
+    })
   }
 
-  console.log(`\nCompletato. Nuovi file: ${stats.ok} — già presenti (saltati): ${stats.skip} — errori: ${stats.error}`)
+  // Classifico ogni cliente: "pending" = file non ancora presenti sul disco.
+  const clients = [...byClient.values()]
+  for (const c of clients) c.pending = c.items.filter((it) => !existsSync(it.dest))
+  const toUpdate = clients.filter((c) => c.pending.length > 0)
+  const upToDate = clients.length - toUpdate.length
+
+  console.log(`Clienti con foto/diete: ${clients.length}`)
+  console.log(`  già aggiornati (nessun file nuovo): ${upToDate}`)
+  console.log(`  da aggiornare: ${toUpdate.length}\n`)
+
+  if (toUpdate.length === 0) {
+    console.log("Tutti i clienti sono già aggiornati. Niente da scaricare.")
+  } else {
+    let done = 0, filesOk = 0, filesMiss = 0
+    for (const c of toUpdate) {
+      showClientProgress(done, toUpdate.length, upToDate, c.name)
+      for (const it of c.pending) {
+        const r = await download(it.bucket, it.storagePath, it.dest)
+        if (r === "ok") filesOk++
+        else if (r === "error") filesMiss++
+      }
+      done++
+      showClientProgress(done, toUpdate.length, upToDate, c.name)
+    }
+    Deno.stdout.writeSync(enc.encode("\n"))
+
+    // Salva l'elenco dei file mancanti (record orfani nel DB) per eventuale bonifica.
+    if (missing.length) {
+      const logPath = path.join(OUT, "file-mancanti.txt")
+      await fs.mkdir(OUT, { recursive: true })
+      await fs.writeFile(
+        logPath,
+        "File presenti a database ma non trovati nello storage Supabase:\n\n" + missing.join("\n") + "\n",
+      )
+    }
+
+    console.log("\n— Riepilogo —")
+    console.log(`Clienti con foto/diete: ${clients.length}`)
+    console.log(`  già aggiornati:       ${upToDate}`)
+    console.log(`  aggiornati adesso:    ${done}`)
+    console.log(`File nuovi scaricati:   ${filesOk}`)
+    if (filesMiss) {
+      console.log(`File a database ma NON presenti nello storage: ${filesMiss}`)
+      console.log(`  (elenco in ${path.join(OUT, "file-mancanti.txt")})`)
+    }
+  }
 }
 
 main()
