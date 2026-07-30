@@ -59,7 +59,7 @@ function useSaveWorkoutPlan() {
           exercise_id: ex.exercise_id,
           sets: ex.sets ? parseInt(ex.sets) : null,
           reps: ex.reps || null,
-          rest_seconds: ex.rest_seconds ? parseInt(ex.rest_seconds) : null,
+          rest: ex.rest?.trim() || null,
           notes: ex.notes || null,
           order_index: i,
         }))
@@ -110,7 +110,7 @@ export function NewWorkoutPlan() {
       youtube_id: catalogItem.youtube_id,
       sets: '4',
       reps: '10',
-      rest_seconds: '90',
+      rest: '1:30',
       notes: '',
     }])
   }
@@ -330,12 +330,12 @@ export function NewWorkoutPlan() {
                     />
                   </div>
                   <div>
-                    <label className="block text-xs text-slate-500 mb-1">Riposo (s)</label>
+                    <label className="block text-xs text-slate-500 mb-1">Riposo (min)</label>
                     <input
                       className="input text-sm py-1.5"
-                      value={ex.rest_seconds}
-                      onChange={e => updateExercise(ex.exercise_id, 'rest_seconds', e.target.value)}
-                      placeholder="90"
+                      value={ex.rest}
+                      onChange={e => updateExercise(ex.exercise_id, 'rest', e.target.value)}
+                      placeholder="1:30"
                     />
                   </div>
                 </div>

@@ -91,7 +91,7 @@ function useUpdateExercises() {
           sets: ex.sets ? parseInt(ex.sets) : null,
           reps: ex.reps || null,
           carico: ex.carico || null,
-          rest_seconds: ex.rest_seconds ? parseInt(ex.rest_seconds) : null,
+          rest: ex.rest?.trim() || null,
           cadenza: ex.cadenza || null,
           notes: ex.notes || null,
           order_index: i,
@@ -330,8 +330,8 @@ function ExerciseViewRow({ ex, onVideoToggle, videoId }) {
             <ReadBox value={ex.carico} />
           </div>
           <div className="col-span-2">
-            <label className="block text-xs text-slate-500 mb-1">Riposo (s)</label>
-            <ReadBox value={ex.rest_seconds} />
+            <label className="block text-xs text-slate-500 mb-1">Riposo (min)</label>
+            <ReadBox value={ex.rest} />
           </div>
         </div>
         <ReadBox value={ex.cadenza} placeholder="Cadenza (opzionale)" />
@@ -380,8 +380,8 @@ function ExerciseEditRow({ ex, data, onChange, onMoveUp, onMoveDown, isFirst, is
           <input className="input text-xs py-1" value={data.carico ?? ''} onChange={e => onChange('carico', e.target.value)} placeholder="80kg" />
         </div>
         <div className="col-span-2">
-          <label className="block text-xs text-slate-500 mb-1">Riposo (s)</label>
-          <input className="input text-xs py-1" value={data.rest_seconds ?? ''} onChange={e => onChange('rest_seconds', e.target.value)} placeholder="90" />
+          <label className="block text-xs text-slate-500 mb-1">Riposo (min)</label>
+          <input className="input text-xs py-1" value={data.rest ?? ''} onChange={e => onChange('rest', e.target.value)} placeholder="1:30" />
         </div>
       </div>
       <input className="input text-xs py-1 mb-1.5" value={data.cadenza ?? ''} onChange={e => onChange('cadenza', e.target.value)} placeholder="Cadenza (opzionale)" />
@@ -392,11 +392,20 @@ function ExerciseEditRow({ ex, data, onChange, onMoveUp, onMoveDown, isFirst, is
 
 // ─── Volume counter ───────────────────────────────────────────
 
+// Numero di serie di un esercizio (0 se non valorizzato/non valido)
+function setsCount(value) {
+  const n = parseInt(value, 10)
+  return Number.isFinite(n) && n > 0 ? n : 0
+}
+
+// Volume = somma delle serie per gruppo muscolare (non numero di esercizi)
 function countsFromExercises(exercises) {
   const counts = {}
   for (const ex of (exercises ?? [])) {
     const mg = ex.exercises_catalog?.muscle_group
-    if (mg) counts[mg] = (counts[mg] || 0) + 1
+    if (!mg) continue
+    const s = setsCount(ex.sets)
+    if (s > 0) counts[mg] = (counts[mg] || 0) + s
   }
   return counts
 }
@@ -539,7 +548,7 @@ function PlanCard({ plan, programIsActive, clientId }) {
   function startEdit() {
     const initial = {}
     plan.workout_exercises?.forEach(ex => {
-      initial[ex.id] = { sets: ex.sets ?? '', reps: ex.reps ?? '', carico: ex.carico ?? '', rest_seconds: ex.rest_seconds ?? '', cadenza: ex.cadenza ?? '', notes: ex.notes ?? '' }
+      initial[ex.id] = { sets: ex.sets ?? '', reps: ex.reps ?? '', carico: ex.carico ?? '', rest: ex.rest ?? '', cadenza: ex.cadenza ?? '', notes: ex.notes ?? '' }
     })
     setEditData(initial)
     setEditOrder(plan.workout_exercises?.map(ex => ex.id) ?? [])

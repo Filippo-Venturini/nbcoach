@@ -101,8 +101,8 @@ begin
         values (client_rec.id, prog_id, plan_labels[s], (p = 10), now())
         returning id into plan_id;
 
-        insert into workout_exercises (plan_id, exercise_id, sets, reps, carico, rest_seconds, cadenza, notes, order_index)
-        select plan_id, ec.id, 4, '8-12', null, 90, null, null, row_number() over () - 1
+        insert into workout_exercises (plan_id, exercise_id, sets, reps, carico, rest, cadenza, notes, order_index)
+        select plan_id, ec.id, 4, '8-12', null, '1:30', null, null, row_number() over () - 1
         from (select id from exercises_catalog order by random() limit 7) ec;
       end loop;
     end loop;

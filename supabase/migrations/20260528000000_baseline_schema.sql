@@ -36,8 +36,12 @@ create table workout_programs (
   is_active       boolean not null default true,
   expires_at      date,
   stimulus_matrix jsonb not null default '{}'::jsonb,
+  volume_targets  jsonb not null default '{}'::jsonb,
   created_at      timestamptz not null default now()
 );
+
+comment on column workout_programs.volume_targets is
+  'Volume settimanale pianificato dal PT per gruppo muscolare, in numero di serie. Es. {"Petto": 12, "Dorsale": 10}. Chiavi opzionali: solo i gruppi pianificati.';
 
 create table workout_plans (
   id           uuid primary key default gen_random_uuid(),
@@ -57,7 +61,7 @@ create table workout_exercises (
   sets           int,
   reps           text,
   carico         text,
-  rest_seconds   int,
+  rest           text,
   cadenza        text,
   reps_effettive text,
   notes          text,
@@ -66,6 +70,9 @@ create table workout_exercises (
 
 comment on column workout_exercises.reps_effettive is
   'Ripetizioni effettivamente eseguite dal cliente, testo libero (es. "2-3-2"). Compilato lato app dal cliente.';
+
+comment on column workout_exercises.rest is
+  'Recupero tra le serie in minuti, testo libero (es. "1:30", "2", "1.5").';
 
 create table diet_plans (
   id           uuid primary key default gen_random_uuid(),

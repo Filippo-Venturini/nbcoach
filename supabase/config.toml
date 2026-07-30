@@ -226,7 +226,10 @@ max_frequency = "1s"
 # Number of characters used in the email OTP.
 otp_length = 6
 # Number of seconds before the email OTP expires (defaults to 1 hour).
-otp_expiry = 3600
+# 12 ore: è la scadenza dei link di invito (set password) e di reset password
+# generati dalle edge function invite-client / reset-password, che il PT
+# condivide a mano al cliente. Il massimo consentito da GoTrue è 86400 (24h).
+otp_expiry = 43200
 
 # Use a production-ready SMTP server
 # [auth.email.smtp]

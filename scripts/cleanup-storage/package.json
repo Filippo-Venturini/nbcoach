@@ -1,0 +1,12 @@
+{
+  "name": "cleanup-storage",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dry-run": "node cleanup-storage.mjs",
+    "apply": "node cleanup-storage.mjs --apply"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.50.0"
+  }
+}
