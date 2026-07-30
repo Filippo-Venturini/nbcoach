@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useParams, useSearchParams, useLocation, useNavigate, Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, ArrowRight, Upload, Plus, ExternalLink, ChevronDown, ChevronUp, Pencil, Check, X, ArrowUp, ArrowDown, Send, Clock, Dumbbell, Salad, Trash2, KeyRound, Copy } from 'lucide-react'
@@ -86,7 +86,7 @@ function useUpdateExercises() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: async ({ clientId, exercises }) => {
-      await Promise.all(exercises.map((ex, i) =>
+      const results = await Promise.all(exercises.map((ex, i) =>
         supabase.from('workout_exercises').update({
           sets: ex.sets ? parseInt(ex.sets) : null,
           reps: ex.reps || null,
@@ -97,6 +97,9 @@ function useUpdateExercises() {
           order_index: i,
         }).eq('id', ex.id)
       ))
+      // Senza questo controllo un update rifiutato passerebbe per riuscito
+      const failed = results.find(r => r.error)
+      if (failed) throw failed.error
     },
     onSuccess: (_, { clientId }) => {
       qc.invalidateQueries({ queryKey: ['workout-programs', clientId] })
@@ -430,9 +433,20 @@ function VolumeBadges({ counts }) {
   )
 }
 
-function ProgramVolumeCounter({ plans }) {
+// Esercizi di una scheda con applicati i valori in corso di modifica (bozza non
+// ancora salvata), così i contatori di volume si aggiornano live
+function exercisesWithDraft(plan, draft) {
+  const list = plan.workout_exercises ?? []
+  if (!draft) return list
+  return list.map(ex => (draft[ex.id] ? { ...ex, sets: draft[ex.id].sets } : ex))
+}
+
+// drafts: { [planId]: bozza } delle schede attualmente in modifica
+function ProgramVolumeCounter({ plans, drafts }) {
   const [open, setOpen] = useState(false)
-  const counts = countsFromExercises((plans ?? []).flatMap(p => p.workout_exercises ?? []))
+  const counts = countsFromExercises(
+    (plans ?? []).flatMap(p => exercisesWithDraft(p, drafts?.[p.id]))
+  )
   const entries = Object.entries(counts)
   if (!entries.length) return null
   const total = entries.reduce((s, [, c]) => s + c, 0)
@@ -451,8 +465,8 @@ function ProgramVolumeCounter({ plans }) {
   )
 }
 
-function PlanVolumeCounter({ plan }) {
-  const counts = countsFromExercises(plan.workout_exercises)
+function PlanVolumeCounter({ plan, draft }) {
+  const counts = countsFromExercises(exercisesWithDraft(plan, draft))
   if (!Object.keys(counts).length) return null
   return (
     <div className="px-4 py-2 bg-navy-950 border-b border-navy-700">
@@ -537,13 +551,22 @@ function ExpiryCard({ icon: Icon, type, item, onSave, isSaving }) {
 
 // ─── Tab: Scheda ──────────────────────────────────────────────
 
-function PlanCard({ plan, programIsActive, clientId }) {
+function PlanCard({ plan, programIsActive, clientId, onDraftChange }) {
   const [expanded, setExpanded] = useState(false)
   const [editing, setEditing] = useState(false)
   const [videoId, setVideoId] = useState(null)
   const [editData, setEditData] = useState({})
   const [editOrder, setEditOrder] = useState([]) // array di exercise.id nell'ordine corrente
   const updateExercises = useUpdateExercises()
+
+  // Espone la bozza al programma, così anche il contatore di volume complessivo
+  // si aggiorna prima del salvataggio
+  useEffect(() => {
+    onDraftChange?.(plan.id, editing ? editData : null)
+  }, [plan.id, editing, editData, onDraftChange])
+
+  // Alla smontatura (es. programma richiuso) la bozza non deve restare appesa
+  useEffect(() => () => onDraftChange?.(plan.id, null), [plan.id, onDraftChange])
 
   function startEdit() {
     const initial = {}
@@ -568,10 +591,13 @@ function PlanCard({ plan, programIsActive, clientId }) {
   }
 
   async function saveEdit() {
-    const exById = Object.fromEntries(plan.workout_exercises?.map(ex => [ex.id, ex]) ?? [])
     const exercises = editOrder.map((id, i) => ({ id, ...editData[id], order_index: i }))
-    await updateExercises.mutateAsync({ clientId, exercises })
-    setEditing(false)
+    try {
+      await updateExercises.mutateAsync({ clientId, exercises })
+      setEditing(false)
+    } catch {
+      // resta in modifica: l'errore è mostrato accanto ai pulsanti
+    }
   }
 
   function cancelEdit() {
@@ -603,6 +629,9 @@ function PlanCard({ plan, programIsActive, clientId }) {
           )}
           {editing && (
             <>
+              {updateExercises.isError && (
+                <span className="text-red-400 text-xs">Salvataggio non riuscito</span>
+              )}
               <button onClick={cancelEdit} className="btn-ghost text-xs px-2 py-1">
                 <X size={12} /> Annulla
               </button>
@@ -621,7 +650,7 @@ function PlanCard({ plan, programIsActive, clientId }) {
       {/* Exercises */}
       {expanded && (
         <div className="border-t border-navy-700">
-          <PlanVolumeCounter plan={plan} />
+          <PlanVolumeCounter plan={plan} draft={editing ? editData : null} />
           <div className="divide-y divide-navy-700">
           {editing
             ? editOrder.map((id, idx) => {
@@ -663,7 +692,22 @@ function ProgramCard({ program, clientId }) {
   const [open, setOpen] = useState(program.is_active)
   const [editingNotes, setEditingNotes] = useState(false)
   const [notesValue, setNotesValue] = useState(program.notes ?? '')
+  // Bozze delle schede in modifica, per il contatore di volume del programma
+  const [planDrafts, setPlanDrafts] = useState({})
   const updateNotes = useUpdateProgramNotes()
+
+  const handleDraftChange = useCallback((planId, draft) => {
+    setPlanDrafts(prev => {
+      if (!draft) {
+        if (!(planId in prev)) return prev
+        const next = { ...prev }
+        delete next[planId]
+        return next
+      }
+      if (prev[planId] === draft) return prev
+      return { ...prev, [planId]: draft }
+    })
+  }, [])
 
   const expiryStatus = program.is_active ? expiryInfo(program.expires_at) : null
 
@@ -698,7 +742,7 @@ function ProgramCard({ program, clientId }) {
       {open && (
         <div className="mt-3 space-y-3">
           {/* Volume */}
-          <ProgramVolumeCounter plans={program.workout_plans} />
+          <ProgramVolumeCounter plans={program.workout_plans} drafts={planDrafts} />
 
           {/* Note: visibili solo se presenti, editing inline */}
           {!editingNotes && notesValue && (
@@ -748,6 +792,7 @@ function ProgramCard({ program, clientId }) {
                 plan={plan}
                 programIsActive={program.is_active}
                 clientId={clientId}
+                onDraftChange={handleDraftChange}
               />
             ))}
           </div>
