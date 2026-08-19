@@ -1,3 +1,18 @@
+import { GripVertical, Search } from 'lucide-react'
+import {
+  DndContext,
+  closestCenter,
+  PointerSensor,
+  useSensor,
+  useSensors,
+} from '@dnd-kit/core'
+import {
+  SortableContext,
+  verticalListSortingStrategy,
+  useSortable,
+  arrayMove,
+} from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, useSearchParams, useLocation, useNavigate, Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -7,6 +22,20 @@ import { APP_URL } from '../lib/config'
 import { ConfirmModal } from '../components/ConfirmModal'
 
 // ─── Data hooks ───────────────────────────────────────────────
+
+function useCatalog() {
+  return useQuery({
+    queryKey: ['catalog'],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('exercises_catalog')
+        .select('id, name, youtube_id, muscle_group')
+        .order('muscle_group').order('name')
+      if (error) throw error
+      return data
+    },
+  })
+}
 
 function useClient(id) {
   return useQuery({
@@ -82,12 +111,17 @@ function useWorkoutPrograms(clientId) {
   })
 }
 
-function useUpdateExercises() {
+function useSyncPlanExercises() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: async ({ clientId, exercises }) => {
-      const results = await Promise.all(exercises.map((ex, i) =>
-        supabase.from('workout_exercises').update({
+    mutationFn: async ({ clientId, planId, exercises, deletedIds }) => {
+      if (deletedIds.length) {
+        const { error } = await supabase.from('workout_exercises').delete().in('id', deletedIds)
+        if (error) throw error
+      }
+
+      const results = await Promise.all(exercises.map((ex, i) => {
+        const payload = {
           sets: ex.sets ? parseInt(ex.sets) : null,
           reps: ex.reps || null,
           carico: ex.carico || null,
@@ -95,9 +129,11 @@ function useUpdateExercises() {
           cadenza: ex.cadenza || null,
           notes: ex.notes || null,
           order_index: i,
-        }).eq('id', ex.id)
-      ))
-      // Senza questo controllo un update rifiutato passerebbe per riuscito
+        }
+        return ex.dbId
+          ? supabase.from('workout_exercises').update(payload).eq('id', ex.dbId)
+          : supabase.from('workout_exercises').insert({ ...payload, plan_id: planId, exercise_id: ex.exercise_id })
+      }))
       const failed = results.find(r => r.error)
       if (failed) throw failed.error
     },
@@ -277,6 +313,37 @@ function useWeekPhotos(clientId, weekKey, weekStart, enabled) {
 
 // ─── Helpers ──────────────────────────────────────────────────
 
+function normalizeExercise(ex) {
+  return {
+    id: ex.id,           // usato anche come chiave sortable
+    dbId: ex.id,          // presente => riga esistente in db
+    exercise_id: ex.exercise_id,
+    name: ex.exercises_catalog?.name ?? '',
+    muscle_group: ex.exercises_catalog?.muscle_group ?? '',
+    youtube_id: ex.exercises_catalog?.youtube_id ?? '',
+    reps_effettive: ex.reps_effettive,
+    sets: ex.sets ?? '',
+    reps: ex.reps ?? '',
+    carico: ex.carico ?? '',
+    rest: ex.rest ?? '',
+    cadenza: ex.cadenza ?? '',
+    notes: ex.notes ?? '',
+  }
+}
+
+function makeNewDraftExercise(catalogItem) {
+  return {
+    id: crypto.randomUUID(),
+    dbId: null,
+    exercise_id: catalogItem.id,
+    name: catalogItem.name,
+    muscle_group: catalogItem.muscle_group,
+    youtube_id: catalogItem.youtube_id,
+    reps_effettive: null,
+    sets: '', reps: '', carico: '', rest: '', cadenza: '', notes: '',
+  }
+}
+
 function fmt(dateStr, opts) {
   return new Date(dateStr).toLocaleDateString('it-IT', opts ?? { day: '2-digit', month: 'short', year: 'numeric' })
 }
@@ -351,28 +418,40 @@ function ExerciseViewRow({ ex, onVideoToggle, videoId }) {
   )
 }
 
-function ExerciseEditRow({ ex, data, onChange, onMoveUp, onMoveDown, isFirst, isLast }) {
+function SortableExerciseEditRow({ id, ex, onChange, onRemove }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id })
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.4 : 1,
+    zIndex: isDragging ? 10 : undefined,
+  }
   return (
-    <div className="bg-navy-900 px-4 py-3">
+    <div ref={setNodeRef} style={style} className="bg-navy-900 px-4 py-3">
       <div className="flex items-center justify-between mb-2">
-        <p className="font-medium text-white text-sm">{ex.exercises_catalog?.name}</p>
-        <div className="flex items-center gap-1">
-          <button onClick={onMoveUp} disabled={isFirst} className="p-1 text-slate-600 hover:text-slate-300 disabled:opacity-20 transition-colors">
-            <ArrowUp size={13} />
+        <div className="flex items-center gap-2">
+          <button
+            {...attributes}
+            {...listeners}
+            className="cursor-grab active:cursor-grabbing text-slate-600 hover:text-slate-400 transition-colors p-0.5 touch-none"
+            onClick={e => e.stopPropagation()}
+          >
+            <GripVertical size={15} />
           </button>
-          <button onClick={onMoveDown} disabled={isLast} className="p-1 text-slate-600 hover:text-slate-300 disabled:opacity-20 transition-colors">
-            <ArrowDown size={13} />
-          </button>
+          <p className="font-medium text-white text-sm">{ex.name}</p>
         </div>
+        <button onClick={onRemove} className="text-slate-600 hover:text-red-400 transition-colors">
+          <X size={14} />
+        </button>
       </div>
       <div className="grid grid-cols-12 gap-1.5 mb-1.5">
         <div className="col-span-2">
           <label className="block text-xs text-slate-500 mb-1">Serie</label>
-          <input className="input text-xs py-1" value={data.sets ?? ''} onChange={e => onChange('sets', e.target.value)} placeholder="4" />
+          <input className="input text-xs py-1" value={ex.sets} onChange={e => onChange('sets', e.target.value)} placeholder="4" />
         </div>
         <div className="col-span-3">
           <label className="block text-xs text-slate-500 mb-1">Reps</label>
-          <input className="input text-xs py-1" value={data.reps ?? ''} onChange={e => onChange('reps', e.target.value)} placeholder="8-10" />
+          <input className="input text-xs py-1" value={ex.reps} onChange={e => onChange('reps', e.target.value)} placeholder="8-10" />
         </div>
         <div className="col-span-3">
           <label className="block text-xs text-slate-500 mb-1">Reps effettive</label>
@@ -380,15 +459,63 @@ function ExerciseEditRow({ ex, data, onChange, onMoveUp, onMoveDown, isFirst, is
         </div>
         <div className="col-span-2">
           <label className="block text-xs text-slate-500 mb-1">Carico</label>
-          <input className="input text-xs py-1" value={data.carico ?? ''} onChange={e => onChange('carico', e.target.value)} placeholder="80kg" />
+          <input className="input text-xs py-1" value={ex.carico} onChange={e => onChange('carico', e.target.value)} placeholder="80kg" />
         </div>
         <div className="col-span-2">
           <label className="block text-xs text-slate-500 mb-1">Riposo (min)</label>
-          <input className="input text-xs py-1" value={data.rest ?? ''} onChange={e => onChange('rest', e.target.value)} placeholder="1:30" />
+          <input className="input text-xs py-1" value={ex.rest} onChange={e => onChange('rest', e.target.value)} placeholder="1:30" />
         </div>
       </div>
-      <input className="input text-xs py-1 mb-1.5" value={data.cadenza ?? ''} onChange={e => onChange('cadenza', e.target.value)} placeholder="Cadenza (opzionale)" />
-      <input className="input text-xs py-1" value={data.notes ?? ''} onChange={e => onChange('notes', e.target.value)} placeholder="Note (opzionale)" />
+      <input className="input text-xs py-1 mb-1.5" value={ex.cadenza} onChange={e => onChange('cadenza', e.target.value)} placeholder="Cadenza (opzionale)" />
+      <input className="input text-xs py-1" value={ex.notes} onChange={e => onChange('notes', e.target.value)} placeholder="Note (opzionale)" />
+    </div>
+  )
+}
+
+const MUSCLE_GROUPS = [
+  'Tutti', 'Petto', 'Centro Schiena', 'Dorsale', 'Spalle', 'Spalla Posteriore', 'Bicipiti',
+  'Tricipiti', 'Quadricipiti', 'Femorali', 'Glutei', 'Addome', 'Stabilizzatori',
+]
+
+function ExerciseCatalogModal({ onSelect, onClose }) {
+  const { data: catalog } = useCatalog()
+  const [search, setSearch] = useState('')
+  const [group, setGroup] = useState('Tutti')
+
+  const filtered = catalog?.filter(ex => {
+    const matchSearch = ex.name.toLowerCase().includes(search.toLowerCase())
+    const matchGroup = group === 'Tutti' || ex.muscle_group === group
+    return matchSearch && matchGroup
+  })
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center px-4 z-50" onClick={onClose}>
+      <div className="card w-full max-w-md max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-heading font-bold italic text-lg text-white uppercase tracking-wide">Aggiungi esercizio</h3>
+          <button onClick={onClose} className="text-slate-500 hover:text-white"><X size={18} /></button>
+        </div>
+        <div className="relative mb-2">
+          <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+          <input className="input pl-8 text-sm py-2" placeholder="Cerca..." value={search} onChange={e => setSearch(e.target.value)} autoFocus />
+        </div>
+        <select className="input text-sm py-2 mb-3" value={group} onChange={e => setGroup(e.target.value)}>
+          {MUSCLE_GROUPS.map(g => <option key={g} value={g}>{g}</option>)}
+        </select>
+        <div className="overflow-y-auto flex-1 space-y-1 pr-0.5">
+          {filtered?.map(ex => (
+            <button
+              key={ex.id}
+              onClick={() => { onSelect(ex); onClose() }}
+              className="w-full text-left px-3 py-2 border transition-colors bg-navy-800 border-navy-700 hover:border-gold-500/50 cursor-pointer"
+            >
+              <p className="text-white text-xs font-medium">{ex.name}</p>
+              {ex.muscle_group && <p className="text-slate-500 text-xs">{ex.muscle_group}</p>}
+            </button>
+          ))}
+          {filtered?.length === 0 && <p className="text-slate-500 text-sm text-center py-4">Nessun esercizio trovato</p>}
+        </div>
+      </div>
     </div>
   )
 }
@@ -405,7 +532,7 @@ function setsCount(value) {
 function countsFromExercises(exercises) {
   const counts = {}
   for (const ex of (exercises ?? [])) {
-    const mg = ex.exercises_catalog?.muscle_group
+    const mg = ex.exercises_catalog?.muscle_group ?? ex.muscle_group
     if (!mg) continue
     const s = setsCount(ex.sets)
     if (s > 0) counts[mg] = (counts[mg] || 0) + s
@@ -436,9 +563,7 @@ function VolumeBadges({ counts }) {
 // Esercizi di una scheda con applicati i valori in corso di modifica (bozza non
 // ancora salvata), così i contatori di volume si aggiornano live
 function exercisesWithDraft(plan, draft) {
-  const list = plan.workout_exercises ?? []
-  if (!draft) return list
-  return list.map(ex => (draft[ex.id] ? { ...ex, sets: draft[ex.id].sets } : ex))
+  return draft ?? (plan.workout_exercises ?? [])
 }
 
 // drafts: { [planId]: bozza } delle schede attualmente in modifica
@@ -555,45 +680,52 @@ function PlanCard({ plan, programIsActive, clientId, onDraftChange }) {
   const [expanded, setExpanded] = useState(false)
   const [editing, setEditing] = useState(false)
   const [videoId, setVideoId] = useState(null)
-  const [editData, setEditData] = useState({})
-  const [editOrder, setEditOrder] = useState([]) // array di exercise.id nell'ordine corrente
-  const updateExercises = useUpdateExercises()
+  const [draftExercises, setDraftExercises] = useState([])
+  const [showCatalog, setShowCatalog] = useState(false)
+  const syncExercises = useSyncPlanExercises()
 
-  // Espone la bozza al programma, così anche il contatore di volume complessivo
-  // si aggiorna prima del salvataggio
   useEffect(() => {
-    onDraftChange?.(plan.id, editing ? editData : null)
-  }, [plan.id, editing, editData, onDraftChange])
+    onDraftChange?.(plan.id, editing ? draftExercises : null)
+  }, [plan.id, editing, draftExercises, onDraftChange])
 
-  // Alla smontatura (es. programma richiuso) la bozza non deve restare appesa
   useEffect(() => () => onDraftChange?.(plan.id, null), [plan.id, onDraftChange])
 
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
+
   function startEdit() {
-    const initial = {}
-    plan.workout_exercises?.forEach(ex => {
-      initial[ex.id] = { sets: ex.sets ?? '', reps: ex.reps ?? '', carico: ex.carico ?? '', rest: ex.rest ?? '', cadenza: ex.cadenza ?? '', notes: ex.notes ?? '' }
-    })
-    setEditData(initial)
-    setEditOrder(plan.workout_exercises?.map(ex => ex.id) ?? [])
+    setDraftExercises((plan.workout_exercises ?? []).map(normalizeExercise))
     setEditing(true)
     setExpanded(true)
   }
 
-  function moveExercise(id, dir) {
-    setEditOrder(prev => {
-      const idx = prev.indexOf(id)
-      const next = [...prev]
-      const swapIdx = idx + dir
-      if (swapIdx < 0 || swapIdx >= next.length) return prev
-      ;[next[idx], next[swapIdx]] = [next[swapIdx], next[idx]]
-      return next
+  function updateDraftField(id, field, value) {
+    setDraftExercises(prev => prev.map(e => e.id === id ? { ...e, [field]: value } : e))
+  }
+
+  function removeDraftExercise(id) {
+    setDraftExercises(prev => prev.filter(e => e.id !== id))
+  }
+
+  function addDraftExercise(catalogItem) {
+    setDraftExercises(prev => [...prev, makeNewDraftExercise(catalogItem)])
+  }
+
+  function handleDragEnd(event) {
+    const { active, over } = event
+    if (!over || active.id === over.id) return
+    setDraftExercises(prev => {
+      const oldIndex = prev.findIndex(e => e.id === active.id)
+      const newIndex = prev.findIndex(e => e.id === over.id)
+      return arrayMove(prev, oldIndex, newIndex)
     })
   }
 
   async function saveEdit() {
-    const exercises = editOrder.map((id, i) => ({ id, ...editData[id], order_index: i }))
+    const deletedIds = (plan.workout_exercises ?? [])
+      .filter(ex => !draftExercises.some(d => d.dbId === ex.id))
+      .map(ex => ex.id)
     try {
-      await updateExercises.mutateAsync({ clientId, exercises })
+      await syncExercises.mutateAsync({ clientId, planId: plan.id, exercises: draftExercises, deletedIds })
       setEditing(false)
     } catch {
       // resta in modifica: l'errore è mostrato accanto ai pulsanti
@@ -610,7 +742,6 @@ function PlanCard({ plan, programIsActive, clientId, onDraftChange }) {
 
   return (
     <div className="border border-navy-700 bg-navy-900">
-      {/* Plan header — sfondo e accento distinti dal corpo esercizi */}
       <div className="flex items-center justify-between px-4 py-2.5 bg-navy-800 border-l-2 border-gold-500/60">
         <button
           className="flex items-center gap-3 flex-1 text-left"
@@ -629,14 +760,14 @@ function PlanCard({ plan, programIsActive, clientId, onDraftChange }) {
           )}
           {editing && (
             <>
-              {updateExercises.isError && (
+              {syncExercises.isError && (
                 <span className="text-red-400 text-xs">Salvataggio non riuscito</span>
               )}
               <button onClick={cancelEdit} className="btn-ghost text-xs px-2 py-1">
                 <X size={12} /> Annulla
               </button>
-              <button onClick={saveEdit} disabled={updateExercises.isPending} className="btn-primary text-xs px-3 py-1 disabled:opacity-50">
-                <Check size={12} /> {updateExercises.isPending ? 'Salvo...' : 'Salva'}
+              <button onClick={saveEdit} disabled={syncExercises.isPending} className="btn-primary text-xs px-3 py-1 disabled:opacity-50">
+                <Check size={12} /> {syncExercises.isPending ? 'Salvo...' : 'Salva'}
               </button>
             </>
           )}
@@ -647,42 +778,48 @@ function PlanCard({ plan, programIsActive, clientId, onDraftChange }) {
         </div>
       </div>
 
-      {/* Exercises */}
       {expanded && (
         <div className="border-t border-navy-700">
-          <PlanVolumeCounter plan={plan} draft={editing ? editData : null} />
+          <PlanVolumeCounter plan={plan} draft={editing ? draftExercises : null} />
           <div className="divide-y divide-navy-700">
-          {editing
-            ? editOrder.map((id, idx) => {
-                const ex = plan.workout_exercises?.find(e => e.id === id)
-                if (!ex) return null
-                return (
-                  <ExerciseEditRow
-                    key={id}
-                    ex={ex}
-                    data={editData[id] ?? {}}
-                    onChange={(field, val) => setEditData(prev => ({ ...prev, [id]: { ...prev[id], [field]: val } }))}
-                    onMoveUp={() => moveExercise(id, -1)}
-                    onMoveDown={() => moveExercise(id, 1)}
-                    isFirst={idx === 0}
-                    isLast={idx === editOrder.length - 1}
-                  />
-                )
-              })
-            : plan.workout_exercises?.map(ex => (
-                <ExerciseViewRow
-                  key={ex.id}
-                  ex={ex}
-                  videoId={videoId}
-                  onVideoToggle={toggleVideo}
-                />
+            {editing ? (
+              <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+                <SortableContext items={draftExercises.map(e => e.id)} strategy={verticalListSortingStrategy}>
+                  {draftExercises.map(ex => (
+                    <SortableExerciseEditRow
+                      key={ex.id}
+                      id={ex.id}
+                      ex={ex}
+                      onChange={(field, val) => updateDraftField(ex.id, field, val)}
+                      onRemove={() => removeDraftExercise(ex.id)}
+                    />
+                  ))}
+                </SortableContext>
+              </DndContext>
+            ) : (
+              plan.workout_exercises?.map(ex => (
+                <ExerciseViewRow key={ex.id} ex={ex} videoId={videoId} onVideoToggle={toggleVideo} />
               ))
-          }
-          {!plan.workout_exercises?.length && (
-            <p className="text-slate-500 text-sm px-4 py-3">Nessun esercizio</p>
-          )}
+            )}
+            {editing && draftExercises.length === 0 && (
+              <p className="text-slate-500 text-sm px-4 py-3">Nessun esercizio, aggiungine uno</p>
+            )}
+            {!editing && !plan.workout_exercises?.length && (
+              <p className="text-slate-500 text-sm px-4 py-3">Nessun esercizio</p>
+            )}
           </div>
+          {editing && (
+            <div className="px-4 py-3 border-t border-navy-700">
+              <button onClick={() => setShowCatalog(true)} className="btn-ghost text-xs px-3 py-1.5">
+                <Plus size={13} /> Aggiungi esercizio
+              </button>
+            </div>
+          )}
         </div>
+      )}
+
+      {showCatalog && (
+        <ExerciseCatalogModal onSelect={addDraftExercise} onClose={() => setShowCatalog(false)} />
       )}
     </div>
   )
