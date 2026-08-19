@@ -18,6 +18,7 @@ import {
 import { CSS } from '@dnd-kit/utilities'
 import { supabase } from '../lib/supabase'
 import { ConfirmModal } from '../components/ConfirmModal'
+import { SupersetPicker, supersetCardStyle } from '../components/SupersetPicker'
 
 // ─── Hooks ────────────────────────────────────────────────────
 
@@ -130,6 +131,7 @@ function useSaveProgram() {
             rest: ex.rest?.trim() || null,
             cadenza: ex.cadenza || null,
             notes: ex.notes || null,
+            superset_color: ex.superset_color || null,
             order_index: i,
           }))
           const { error: exError } = await supabase.from('workout_exercises').insert(rows)
@@ -148,44 +150,37 @@ function useSaveProgram() {
 // ─── Componente esercizio sortable ────────────────────────────
 
 function SortableExerciseRow({ ex, onUpdate, onRemove }) {
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({ id: ex.id })
-
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: ex.id })
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
     opacity: isDragging ? 0.4 : 1,
     zIndex: isDragging ? 10 : undefined,
+    ...supersetCardStyle(ex.superset_color),
   }
 
   return (
     <div ref={setNodeRef} style={style} className="bg-navy-900 border border-navy-700 p-3">
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-2">
-          {/* Drag handle */}
+      <div className="flex items-center justify-between mb-2 gap-2">
+        <div className="flex items-center gap-2 min-w-0">
           <button
             {...attributes}
             {...listeners}
-            className="cursor-grab active:cursor-grabbing text-slate-600 hover:text-slate-400 transition-colors p-0.5 touch-none"
+            className="cursor-grab active:cursor-grabbing text-slate-600 hover:text-slate-400 transition-colors p-0.5 touch-none shrink-0"
             onClick={e => e.stopPropagation()}
           >
             <GripVertical size={15} />
           </button>
-          <div>
-            <p className="text-white text-sm font-medium">{ex.name}</p>
+          <div className="min-w-0">
+            <p className="text-white text-sm font-medium truncate">{ex.name}</p>
             {ex.muscle_group && <p className="text-slate-500 text-xs">{ex.muscle_group}</p>}
           </div>
         </div>
-        <button onClick={onRemove} className="text-slate-600 hover:text-red-400 transition-colors ml-2">
+        <button onClick={onRemove} className="text-slate-600 hover:text-red-400 transition-colors shrink-0">
           <X size={14} />
         </button>
       </div>
+
       <div className="grid grid-cols-4 gap-1.5 mb-1.5">
         <div>
           <label className="block text-xs text-slate-500 mb-1">Serie</label>
@@ -206,6 +201,10 @@ function SortableExerciseRow({ ex, onUpdate, onRemove }) {
       </div>
       <input className="input text-xs py-1 mb-1.5" value={ex.cadenza} onChange={e => onUpdate('cadenza', e.target.value)} placeholder="Cadenza (opzionale)" />
       <input className="input text-xs py-1" value={ex.notes} onChange={e => onUpdate('notes', e.target.value)} placeholder="Note esercizio (opzionale)" />
+
+      <div className="mt-2">
+        <SupersetPicker color={ex.superset_color} onChange={val => onUpdate('superset_color', val)} />
+      </div>
     </div>
   )
 }
@@ -448,6 +447,7 @@ function makeEmptyExercise(catalogItem) {
     rest: '',
     cadenza: '',
     notes: '',
+    superset_color: null,
   }
 }
 
@@ -469,6 +469,7 @@ function mapDbExerciseToDraft(ex) {
     rest: ex.rest ?? '',
     cadenza: ex.cadenza ?? '',
     notes: ex.notes ?? '',
+    superset_color: ex.superset_color ?? null,
   }
 }
 

@@ -20,6 +20,7 @@ import { ArrowLeft, ArrowRight, Upload, Plus, ExternalLink, ChevronDown, Chevron
 import { supabase } from '../lib/supabase'
 import { APP_URL } from '../lib/config'
 import { ConfirmModal } from '../components/ConfirmModal'
+import { SupersetPicker, supersetCardStyle } from '../components/SupersetPicker'
 
 // ─── Data hooks ───────────────────────────────────────────────
 
@@ -128,6 +129,7 @@ function useSyncPlanExercises() {
           rest: ex.rest?.trim() || null,
           cadenza: ex.cadenza || null,
           notes: ex.notes || null,
+          superset_color: ex.superset_color || null,
           order_index: i,
         }
         return ex.dbId
@@ -328,6 +330,7 @@ function normalizeExercise(ex) {
     rest: ex.rest ?? '',
     cadenza: ex.cadenza ?? '',
     notes: ex.notes ?? '',
+    superset_color: ex.superset_color ?? null,
   }
 }
 
@@ -341,6 +344,7 @@ function makeNewDraftExercise(catalogItem) {
     youtube_id: catalogItem.youtube_id,
     reps_effettive: null,
     sets: '', reps: '', carico: '', rest: '', cadenza: '', notes: '',
+    superset_color: null,
   }
 }
 
@@ -373,7 +377,7 @@ function ExerciseViewRow({ ex, onVideoToggle, videoId }) {
   const isVideoOpen = videoId === ex.exercises_catalog?.youtube_id
   return (
     <div>
-      <div className="bg-navy-900 px-4 py-3">
+      <div className="bg-navy-900 px-4 py-3" style={supersetCardStyle(ex.superset_color)}>
         <div className="flex items-center justify-between mb-2">
           <p className="font-medium text-white text-sm">{ex.exercises_catalog?.name}</p>
           {ex.exercises_catalog?.youtube_id && (
@@ -425,25 +429,27 @@ function SortableExerciseEditRow({ id, ex, onChange, onRemove }) {
     transition,
     opacity: isDragging ? 0.4 : 1,
     zIndex: isDragging ? 10 : undefined,
+    ...supersetCardStyle(ex.superset_color),
   }
   return (
     <div ref={setNodeRef} style={style} className="bg-navy-900 px-4 py-3">
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-2">
+      <div className="flex items-center justify-between mb-2 gap-2">
+        <div className="flex items-center gap-2 min-w-0">
           <button
             {...attributes}
             {...listeners}
-            className="cursor-grab active:cursor-grabbing text-slate-600 hover:text-slate-400 transition-colors p-0.5 touch-none"
+            className="cursor-grab active:cursor-grabbing text-slate-600 hover:text-slate-400 transition-colors p-0.5 touch-none shrink-0"
             onClick={e => e.stopPropagation()}
           >
             <GripVertical size={15} />
           </button>
-          <p className="font-medium text-white text-sm">{ex.name}</p>
+          <p className="font-medium text-white text-sm truncate">{ex.name}</p>
         </div>
-        <button onClick={onRemove} className="text-slate-600 hover:text-red-400 transition-colors">
+        <button onClick={onRemove} className="text-slate-600 hover:text-red-400 transition-colors shrink-0">
           <X size={14} />
         </button>
       </div>
+
       <div className="grid grid-cols-12 gap-1.5 mb-1.5">
         <div className="col-span-2">
           <label className="block text-xs text-slate-500 mb-1">Serie</label>
@@ -466,8 +472,12 @@ function SortableExerciseEditRow({ id, ex, onChange, onRemove }) {
           <input className="input text-xs py-1" value={ex.rest} onChange={e => onChange('rest', e.target.value)} placeholder="1:30" />
         </div>
       </div>
-      <input className="input text-xs py-1 mb-1.5" value={ex.cadenza} onChange={e => onChange('cadenza', e.target.value)} placeholder="Cadenza (opzionale)" />
-      <input className="input text-xs py-1" value={ex.notes} onChange={e => onChange('notes', e.target.value)} placeholder="Note (opzionale)" />
+      <input className="input text-xs py-1 mb-1.5" value={ex.cadenza ?? ''} onChange={e => onChange('cadenza', e.target.value)} placeholder="Cadenza (opzionale)" />
+      <input className="input text-xs py-1" value={ex.notes ?? ''} onChange={e => onChange('notes', e.target.value)} placeholder="Note (opzionale)" />
+
+      <div className="mt-2">
+        <SupersetPicker color={ex.superset_color} onChange={val => onChange('superset_color', val)} />
+      </div>
     </div>
   )
 }
