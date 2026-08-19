@@ -50,6 +50,7 @@ create table workout_plans (
   name         text not null,
   notes        text,
   is_active    boolean not null default true,
+  volume_targets jsonb not null default '{}'::jsonb,
   created_at   timestamptz not null default now(),
   updated_at   timestamptz not null default now()
 );
@@ -65,6 +66,7 @@ create table workout_exercises (
   cadenza        text,
   reps_effettive text,
   notes          text,
+  superset_color text,
   order_index    int not null default 0
 );
 
@@ -73,6 +75,9 @@ comment on column workout_exercises.reps_effettive is
 
 comment on column workout_exercises.rest is
   'Recupero tra le serie in minuti, testo libero (es. "1:30", "2", "1.5").';
+
+comment on column workout_exercises.superset_color is
+  'Hex color (es. "#ef4444") se l''esercizio è parte di una superserie/circuito. NULL se esercizio singolo. Esercizi con lo stesso colore nella stessa scheda sono raggruppati insieme dal PT.';
 
 create table diet_plans (
   id           uuid primary key default gen_random_uuid(),
