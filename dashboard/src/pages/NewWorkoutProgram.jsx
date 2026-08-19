@@ -35,20 +35,45 @@ function useCatalog() {
   })
 }
 
-// Recupera l'ultima matrice stimoli compilata per il cliente (dall'ultimo programma creato)
-function useLastStimulusMatrix(clientId) {
+// Recupera l'ultimo programma del cliente per precompilare il nuovo
+function useLastProgram(clientId) {
   return useQuery({
-    queryKey: ['last-stimulus-matrix', clientId],
+    queryKey: ['last-program', clientId],
     queryFn: async () => {
       const { data, error } = await supabase
         .from('workout_programs')
-        .select('stimulus_matrix')
+        .select(`
+          notes,
+          stimulus_matrix,
+          volume_targets,
+          workout_plans (
+            *,
+            workout_exercises (
+              *,
+              exercises_catalog ( name, youtube_id, muscle_group )
+            )
+          )
+        `)
         .eq('client_id', clientId)
         .order('created_at', { ascending: false })
         .limit(1)
         .maybeSingle()
       if (error) throw error
-      return data?.stimulus_matrix ?? {}
+      if (!data) return null
+
+      const plans = [...(data.workout_plans ?? [])]
+        .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+        .map(plan => ({
+          ...plan,
+          workout_exercises: [...(plan.workout_exercises ?? [])].sort((a, b) => a.order_index - b.order_index),
+        }))
+
+      return {
+        notes: data.notes ?? '',
+        stimulus_matrix: data.stimulus_matrix ?? {},
+        volume_targets: data.volume_targets ?? {},
+        plans,
+      }
     },
     enabled: !!clientId,
     refetchOnMount: 'always',
@@ -73,7 +98,7 @@ function useClient(id) {
 function useSaveProgram() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: async ({ clientId, programName, programNotes, programExpiry, stimulusMatrix, volumeTargets, plans }) => {
+    mutationFn: async ({ clientId, programName, programNotes, programExpiry, stimulusMatrix, volumeTargets, plans, planVolumeTargets }) => {
       await supabase.from('workout_programs').update({ is_active: false }).eq('client_id', clientId)
 
       const { data: program, error: progError } = await supabase
@@ -85,7 +110,13 @@ function useSaveProgram() {
       for (const plan of plans) {
         const { data: savedPlan, error: planError } = await supabase
           .from('workout_plans')
-          .insert({ client_id: clientId, program_id: program.id, name: plan.name, is_active: true })
+          .insert({
+            client_id: clientId,
+            program_id: program.id,
+            name: plan.name,
+            is_active: true,
+            volume_targets: cleanVolumeTargets(planVolumeTargets?.[plan.id]),
+          })
           .select().single()
         if (planError) throw planError
 
@@ -109,7 +140,7 @@ function useSaveProgram() {
     },
     onSuccess: (_, { clientId }) => {
       qc.invalidateQueries({ queryKey: ['workout-programs', clientId] })
-      qc.invalidateQueries({ queryKey: ['last-stimulus-matrix', clientId] })
+      qc.invalidateQueries({ queryKey: ['last-program', clientId] })
     },
   })
 }
@@ -124,7 +155,7 @@ function SortableExerciseRow({ ex, onUpdate, onRemove }) {
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: ex.exercise_id })
+  } = useSortable({ id: ex.id })
 
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -228,24 +259,16 @@ function CatalogPanel({ plans, activePlanIdx, onAddExercise }) {
         </select>
       </div>
       <div className="overflow-y-auto flex-1 space-y-1 pr-0.5">
-        {filtered?.map(ex => {
-          const alreadyIn = activePlan?.exercises.some(e => e.exercise_id === ex.id)
-          return (
+        {filtered?.map(ex => (
             <button
               key={ex.id}
               onClick={() => onAddExercise(ex)}
-              disabled={alreadyIn}
-              className={`w-full text-left px-3 py-2 border transition-colors
-                ${alreadyIn
-                  ? 'bg-navy-800 border-navy-700 opacity-40 cursor-not-allowed'
-                  : 'bg-navy-800 border-navy-700 hover:border-gold-500/50 cursor-pointer'
-                }`}
+              className="w-full text-left px-3 py-2 border transition-colors bg-navy-800 border-navy-700 hover:border-gold-500/50 cursor-pointer"
             >
               <p className="text-white text-xs font-medium">{ex.name}</p>
               {ex.muscle_group && <p className="text-slate-500 text-xs">{ex.muscle_group}</p>}
             </button>
-          )
-        })}
+          ))}
       </div>
     </div>
   )
@@ -291,6 +314,66 @@ function VolumeBadges({ counts }) {
   )
 }
 
+function VolumeMuscleGrid({ counts, targets, onSetTarget, onRemoveTarget }) {
+  const editable = Boolean(onSetTarget)
+  const rows = volumeRowGroups(counts, targets ?? {})
+
+  return (
+    <div className="grid gap-2 mt-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))' }}>
+      {rows.map(mg => {
+        const actual = counts[mg] ?? 0
+        const raw = targets?.[mg] ?? ''
+        const target = setsCount(raw)
+        const pct = target ? Math.min(100, Math.round((actual / target) * 100)) : 0
+        return (
+          <div key={mg} className="bg-navy-900 border border-navy-700 px-2.5 py-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-slate-300 text-xs truncate" title={mg}>{mg}</span>
+              <div className="flex items-center gap-1 shrink-0">
+                <span className={`text-sm font-bold tabular-nums ${editable ? volumeTone(actual, target) : 'text-slate-300'}`}>{actual}</span>
+                {editable && (
+                  <>
+                    <span className="text-slate-600 text-xs">/</span>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      maxLength={3}
+                      className="input text-xs py-0.5 px-1 w-12 text-center"
+                      placeholder="–"
+                      value={raw}
+                      onFocus={e => e.target.select()}
+                      onChange={e => onSetTarget(mg, e.target.value.replace(/\D/g, ''))}
+                    />
+                    {raw !== '' && (
+                      <button
+                        type="button"
+                        onClick={() => onRemoveTarget(mg)}
+                        title="Azzera obiettivo"
+                        className="text-slate-600 hover:text-red-400 transition-colors"
+                      >
+                        <X size={12} />
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+            {editable && target > 0 && (
+              <div className="mt-1.5 h-1 bg-navy-800">
+                <div
+                  className={`h-full transition-all ${actual > target ? 'bg-red-400' : actual === target ? 'bg-green-400' : 'bg-gold-500'}`}
+                  style={{ width: `${actual > target ? 100 : pct}%` }}
+                />
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 // Tutti i gruppi muscolari, in ordine anatomico (upper push → schiena → spalle → braccia → gambe → core),
 // più eventuali gruppi presenti negli esercizi ma non censiti in elenco
 function volumeRowGroups(counts, targets) {
@@ -310,7 +393,6 @@ function volumeTone(actual, target) {
 
 function ProgramVolumePlanner({ plans, targets, onSetTarget, onRemoveTarget }) {
   const counts = countsFromExercises(plans.flatMap(p => p.exercises ?? []))
-  const rows = volumeRowGroups(counts, targets)
   const totalActual = Object.values(counts).reduce((s, n) => s + n, 0)
   const totalTarget = Object.values(targets).reduce((s, v) => s + setsCount(v), 0)
 
@@ -325,65 +407,28 @@ function ProgramVolumePlanner({ plans, targets, onSetTarget, onRemoveTarget }) {
           <span className="text-gold-400 font-bold tabular-nums">{totalTarget || '–'}</span>
         </span>
       </div>
-      <div className="grid gap-2 mt-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))' }}>
-        {rows.map(mg => {
-          const actual = counts[mg] ?? 0
-          const raw = targets[mg] ?? ''
-          const target = setsCount(raw)
-          const pct = target ? Math.min(100, Math.round((actual / target) * 100)) : 0
-          return (
-            <div key={mg} className="bg-navy-900 border border-navy-700 px-2.5 py-2">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-slate-300 text-xs truncate" title={mg}>{mg}</span>
-                <div className="flex items-center gap-1 shrink-0">
-                  <span className={`text-sm font-bold tabular-nums ${volumeTone(actual, target)}`}>{actual}</span>
-                  <span className="text-slate-600 text-xs">/</span>
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    pattern="[0-9]*"
-                    maxLength={3}
-                    className="input text-xs py-0.5 px-1 w-12 text-center"
-                    placeholder="–"
-                    value={raw}
-                    onFocus={e => e.target.select()}
-                    onChange={e => onSetTarget(mg, e.target.value.replace(/\D/g, ''))}
-                  />
-                  {raw !== '' && (
-                    <button
-                      type="button"
-                      onClick={() => onRemoveTarget(mg)}
-                      title="Azzera obiettivo"
-                      className="text-slate-600 hover:text-red-400 transition-colors"
-                    >
-                      <X size={12} />
-                    </button>
-                  )}
-                </div>
-              </div>
-              <div className="mt-1.5 h-1 bg-navy-800">
-                {target > 0 && (
-                  <div
-                    className={`h-full transition-all ${actual > target ? 'bg-red-400' : actual === target ? 'bg-green-400' : 'bg-gold-500'}`}
-                    style={{ width: `${actual > target ? 100 : pct}%` }}
-                  />
-                )}
-              </div>
-            </div>
-          )
-        })}
-      </div>
+      <VolumeMuscleGrid counts={counts} targets={targets} onSetTarget={onSetTarget} onRemoveTarget={onRemoveTarget} />
     </div>
   )
 }
 
-function PlanVolumeCounter({ plan }) {
+function PlanVolumeCounter({ plan, targets, onSetTarget, onRemoveTarget }) {
   const counts = countsFromExercises(plan.exercises)
-  if (!Object.keys(counts).length) return null
+  const totalActual = Object.values(counts).reduce((s, n) => s + n, 0)
+  const totalTarget = Object.values(targets).reduce((s, v) => s + setsCount(v), 0)
+
   return (
     <div className="mb-3 pb-3 border-b border-navy-700">
-      <p className="text-xs font-heading uppercase tracking-wider text-slate-500 mb-2">Volume scheda</p>
-      <VolumeBadges counts={counts} />
+      <div className="flex items-center justify-between gap-3 mb-1">
+        <p className="text-xs font-heading uppercase tracking-wider text-slate-500">Volume scheda</p>
+        <span className="flex items-center gap-1.5 bg-gold-500/10 border border-gold-500/40 px-2 py-1 text-xs">
+          <span className="text-gold-300 uppercase tracking-wider">Totale</span>
+          <span className={`font-bold tabular-nums ${volumeTone(totalActual, totalTarget)}`}>{totalActual}</span>
+          <span className="text-gold-500/50">/</span>
+          <span className="text-gold-400 font-bold tabular-nums">{totalTarget || '–'}</span>
+        </span>
+      </div>
+      <VolumeMuscleGrid counts={counts} targets={targets} onSetTarget={onSetTarget} onRemoveTarget={onRemoveTarget} />
     </div>
   )
 }
@@ -392,14 +437,15 @@ function PlanVolumeCounter({ plan }) {
 
 function makeEmptyExercise(catalogItem) {
   return {
+    id: crypto.randomUUID(),
     exercise_id: catalogItem.id,
     name: catalogItem.name,
     muscle_group: catalogItem.muscle_group,
     youtube_id: catalogItem.youtube_id,
-    sets: '4',
-    reps: '10',
+    sets: '',
+    reps: '',
     carico: '',
-    rest: '1:30',
+    rest: '',
     cadenza: '',
     notes: '',
   }
@@ -407,6 +453,39 @@ function makeEmptyExercise(catalogItem) {
 
 function makeEmptyPlan(label) {
   return { id: crypto.randomUUID(), name: label, exercises: [] }
+}
+
+function mapDbExerciseToDraft(ex) {
+  const cat = ex.exercises_catalog ?? {}
+  return {
+    id: crypto.randomUUID(),
+    exercise_id: ex.exercise_id,
+    name: cat.name ?? '',
+    muscle_group: cat.muscle_group ?? '',
+    youtube_id: cat.youtube_id ?? '',
+    sets: ex.sets != null ? String(ex.sets) : '',
+    reps: ex.reps ?? '',
+    carico: ex.carico ?? '',
+    rest: ex.rest ?? '',
+    cadenza: ex.cadenza ?? '',
+    notes: ex.notes ?? '',
+  }
+}
+
+function mapDbPlanToDraft(plan) {
+  return {
+    id: crypto.randomUUID(),
+    name: plan.name ?? '',
+    exercises: (plan.workout_exercises ?? []).map(mapDbExerciseToDraft),
+  }
+}
+
+function mapVolumeTargetsToDraft(targets) {
+  const out = {}
+  for (const [mg, value] of Object.entries(targets ?? {})) {
+    if (value != null && value !== '') out[mg] = String(value)
+  }
+  return out
 }
 
 // Converte i target di volume (stringhe dagli input) in numeri, scartando i valori vuoti/non validi
@@ -425,31 +504,44 @@ export function NewWorkoutProgram() {
   const { id: clientId } = useParams()
   const navigate = useNavigate()
   const { data: client } = useClient(clientId)
-  const { data: lastStimuli, isFetching: lastStimuliFetching } = useLastStimulusMatrix(clientId)
+  const { data: lastProgram, isFetching: lastProgramFetching } = useLastProgram(clientId)
   const saveProgram = useSaveProgram()
 
   const [programName, setProgramName] = useState('')
   const [programNotes, setProgramNotes] = useState('')
   const [programExpiry, setProgramExpiry] = useState('')
   const [stimuli, setStimuli] = useState({})
-  const [stimuliSeeded, setStimuliSeeded] = useState(false)
+  const [previousProgramSeeded, setPreviousProgramSeeded] = useState(false)
   // Volume pianificato dal PT per gruppo muscolare (valori come stringhe, per input controllati)
   const [volumeTargets, setVolumeTargets] = useState({})
+  // Volume pianificato dal PT per gruppo muscolare, PER SCHEDA (chiave = plan.id)
+  const [planVolumeTargets, setPlanVolumeTargets] = useState({})
   const [copiedCol, setCopiedCol] = useState(null)
-
-  // Precompila la tabella con l'ultima compilazione del cliente (una sola volta,
-  // solo dopo che il dato fresco è stato caricato dal server per evitare seeding da cache stale)
-  useEffect(() => {
-    if (!stimuliSeeded && !lastStimuliFetching && lastStimuli) {
-      setStimuli(lastStimuli)
-      setStimuliSeeded(true)
-    }
-  }, [lastStimuli, lastStimuliFetching, stimuliSeeded])
   const [plans, setPlans] = useState([makeEmptyPlan('Scheda A')])
   const [activePlanIdx, setActivePlanIdx] = useState(0)
   const [expandedPlans, setExpandedPlans] = useState({ 0: true })
   const [error, setError] = useState(null)
   const [deletePlanTarget, setDeletePlanTarget] = useState(null)
+
+  // Precompila dal programma più recente del cliente (una sola volta, dopo fetch fresco)
+  useEffect(() => {
+    if (previousProgramSeeded || lastProgramFetching) return
+    if (lastProgram) {
+      setProgramNotes(lastProgram.notes)
+      setStimuli(lastProgram.stimulus_matrix)
+      setVolumeTargets(mapVolumeTargetsToDraft(lastProgram.volume_targets))
+      const draftPlans = lastProgram.plans.map(mapDbPlanToDraft)
+      if (draftPlans.length > 0) {
+        setPlans(draftPlans)
+        setExpandedPlans(Object.fromEntries(draftPlans.map((_, i) => [i, true])))
+        setActivePlanIdx(0)
+        setPlanVolumeTargets(Object.fromEntries(
+          draftPlans.map((draftPlan, i) => [draftPlan.id, mapVolumeTargetsToDraft(lastProgram.plans[i].volume_targets)])
+        ))
+      }
+    }
+    setPreviousProgramSeeded(true)
+  }, [lastProgram, lastProgramFetching, previousProgramSeeded])
 
   const sensors = useSensors(useSensor(PointerSensor, {
     activationConstraint: { distance: 5 }, // evita attivazione su click normali
@@ -468,6 +560,21 @@ export function NewWorkoutProgram() {
       const next = { ...prev }
       delete next[group]
       return next
+    })
+  }
+
+    function setPlanVolumeTarget(planId, group, value) {
+    setPlanVolumeTargets(prev => ({
+      ...prev,
+      [planId]: { ...prev[planId], [group]: value },
+    }))
+  }
+
+  function removePlanVolumeTarget(planId, group) {
+    setPlanVolumeTargets(prev => {
+      const planTargets = { ...(prev[planId] ?? {}) }
+      delete planTargets[group]
+      return { ...prev, [planId]: planTargets }
     })
   }
 
@@ -517,22 +624,22 @@ export function NewWorkoutProgram() {
 
   function addExercise(catalogItem) {
     setPlans(prev => prev.map((p, i) =>
-      i === activePlanIdx && !p.exercises.some(e => e.exercise_id === catalogItem.id)
+      i === activePlanIdx
         ? { ...p, exercises: [...p.exercises, makeEmptyExercise(catalogItem)] }
         : p
     ))
   }
 
-  function removeExercise(planIdx, exerciseId) {
+  function removeExercise(planIdx, instanceId) {
     setPlans(prev => prev.map((p, i) =>
-      i === planIdx ? { ...p, exercises: p.exercises.filter(e => e.exercise_id !== exerciseId) } : p
+      i === planIdx ? { ...p, exercises: p.exercises.filter(e => e.id !== instanceId) } : p
     ))
   }
 
-  function updateExercise(planIdx, exerciseId, field, value) {
+  function updateExercise(planIdx, instanceId, field, value) {
     setPlans(prev => prev.map((p, i) =>
       i === planIdx
-        ? { ...p, exercises: p.exercises.map(e => e.exercise_id === exerciseId ? { ...e, [field]: value } : e) }
+        ? { ...p, exercises: p.exercises.map(e => e.id === instanceId ? { ...e, [field]: value } : e) }
         : p
     ))
   }
@@ -542,8 +649,8 @@ export function NewWorkoutProgram() {
     if (!over || active.id === over.id) return
     setPlans(prev => prev.map((p, i) => {
       if (i !== planIdx) return p
-      const oldIndex = p.exercises.findIndex(e => e.exercise_id === active.id)
-      const newIndex = p.exercises.findIndex(e => e.exercise_id === over.id)
+      const oldIndex = p.exercises.findIndex(e => e.id === active.id)
+      const newIndex = p.exercises.findIndex(e => e.id === over.id)
       return { ...p, exercises: arrayMove(p.exercises, oldIndex, newIndex) }
     }))
   }
@@ -554,7 +661,7 @@ export function NewWorkoutProgram() {
     if (plans.every(p => p.exercises.length === 0)) { setError('Aggiungi almeno un esercizio'); return }
     setError(null)
     try {
-      await saveProgram.mutateAsync({ clientId, programName, programNotes, programExpiry, stimulusMatrix: stimuli, volumeTargets: cleanVolumeTargets(volumeTargets), plans })
+      await saveProgram.mutateAsync({ clientId, programName, programNotes, programExpiry, stimulusMatrix: stimuli, volumeTargets: cleanVolumeTargets(volumeTargets), plans, planVolumeTargets })
       navigate(`/clients/${clientId}?tab=scheda`)
     } catch (err) {
       setError(err.message)
@@ -743,7 +850,12 @@ export function NewWorkoutProgram() {
                   {/* Plan exercises con DnD */}
                   {isExpanded && (
                     <div className="px-4 pb-4" onClick={e => e.stopPropagation()}>
-                      <PlanVolumeCounter plan={plan} />
+                      <PlanVolumeCounter
+                        plan={plan}
+                        targets={planVolumeTargets[plan.id] ?? {}}
+                        onSetTarget={(mg, val) => setPlanVolumeTarget(plan.id, mg, val)}
+                        onRemoveTarget={mg => removePlanVolumeTarget(plan.id, mg)}
+                      />
                       {plan.exercises.length === 0 && (
                         <p className="text-slate-500 text-sm py-3 text-center">
                           Aggiungi esercizi dal catalogo
@@ -755,16 +867,16 @@ export function NewWorkoutProgram() {
                         onDragEnd={e => handleDragEnd(e, planIdx)}
                       >
                         <SortableContext
-                          items={plan.exercises.map(e => e.exercise_id)}
+                          items={plan.exercises.map(e => e.id)}
                           strategy={verticalListSortingStrategy}
                         >
                           <div className="space-y-2">
                             {plan.exercises.map(ex => (
                               <SortableExerciseRow
-                                key={ex.exercise_id}
+                                key={ex.id}
                                 ex={ex}
-                                onUpdate={(field, val) => updateExercise(planIdx, ex.exercise_id, field, val)}
-                                onRemove={() => removeExercise(planIdx, ex.exercise_id)}
+                                onUpdate={(field, val) => updateExercise(planIdx, ex.id, field, val)}
+                                onRemove={() => removeExercise(planIdx, ex.id)}
                               />
                             ))}
                           </div>
