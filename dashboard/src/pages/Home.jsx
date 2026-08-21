@@ -20,6 +20,16 @@ function formatDate(dateStr) {
   return new Date(dateStr).toLocaleDateString('it-IT', { day: '2-digit', month: 'short' })
 }
 
+// Applica il filtro "attivo oggi" (starts_at <= oggi <= expires_at, con NULL
+// trattati come "nessun vincolo") a una query Supabase. Stessa logica usata
+// in ClientDetail.jsx per calcolare lo stato di programmi/diete.
+function whereActiveToday(query) {
+  const today = new Date().toISOString().split('T')[0]
+  return query
+    .or(`starts_at.is.null,starts_at.lte.${today}`)
+    .or(`expires_at.is.null,expires_at.gte.${today}`)
+}
+
 // ─── Hooks ────────────────────────────────────────────────────
 
 function useKPIs() {
@@ -28,8 +38,8 @@ function useKPIs() {
     queryFn: async () => {
       const [{ count: total }, { data: programs }, { data: diets }] = await Promise.all([
         supabase.from('profiles').select('*', { count: 'exact', head: true }).eq('role', 'client'),
-        supabase.from('workout_programs').select('client_id').eq('is_active', true),
-        supabase.from('diet_plans').select('client_id').eq('is_active', true),
+        whereActiveToday(supabase.from('workout_programs').select('client_id')),
+        whereActiveToday(supabase.from('diet_plans').select('client_id')),
       ])
       return {
         total: total ?? 0,
@@ -49,6 +59,23 @@ function mondayOf(date) {
   return d
 }
 
+// Tra una lista di righe { client_id, expires_at, ... }, tiene per ciascun
+// client_id solo quella con la scadenza più lontana (NULL = "infinita",
+// vince sempre). È la stessa identica regola con cui calcoliamo il badge
+// in cima al dettaglio cliente: qui la usiamo per decidere quale scadenza
+// mostrare/considerare per ogni cliente, così i due punti restano coerenti.
+function farthestPerClient(rows) {
+  const byClient = new Map()
+  for (const row of rows ?? []) {
+    const prev = byClient.get(row.client_id)
+    if (!prev) { byClient.set(row.client_id, row); continue }
+    if (!row.expires_at) { byClient.set(row.client_id, row); continue }
+    if (!prev.expires_at) continue
+    if (row.expires_at > prev.expires_at) byClient.set(row.client_id, row)
+  }
+  return byClient
+}
+
 function useExpiringItems() {
   return useQuery({
     queryKey: ['expiring-items'],
@@ -65,37 +92,36 @@ function useExpiringItems() {
       nextSundayEnd.setDate(nextSundayEnd.getDate() + 6)
       nextSundayEnd.setHours(23, 59, 59, 999)
 
-      const nextWeekEndStr = nextSundayEnd.toISOString().split('T')[0]
-
+      // Prendiamo TUTTI i programmi/diete attivi oggi (non filtriamo già
+      // per finestra di scadenza qui: dobbiamo prima trovare, per ciascun
+      // cliente, quello con la scadenza più lontana — la stessa regola del
+      // badge in cima al dettaglio cliente — e solo dopo controllare se
+      // QUELLA scadenza cade questa settimana o la prossima).
       const [{ data: programs }, { data: diets }] = await Promise.all([
-        supabase
-          .from('workout_programs')
-          .select('client_id, name, expires_at, profiles(id, full_name)')
-          .eq('is_active', true)
-          .not('expires_at', 'is', null)
-          .lte('expires_at', nextWeekEndStr)
-          .order('expires_at'),
-        supabase
-          .from('diet_plans')
-          .select('client_id, name, expires_at, profiles(id, full_name)')
-          .eq('is_active', true)
-          .not('expires_at', 'is', null)
-          .lte('expires_at', nextWeekEndStr)
-          .order('expires_at'),
+        whereActiveToday(
+          supabase.from('workout_programs').select('client_id, name, expires_at, profiles(id, full_name)')
+        ),
+        whereActiveToday(
+          supabase.from('diet_plans').select('client_id, name, expires_at, profiles(id, full_name)')
+        ),
       ])
 
-      // Unifica per cliente
+      const farthestPrograms = farthestPerClient(programs)
+      const farthestDiets = farthestPerClient(diets)
+
+      // Unifica per cliente. Un programma/dieta senza scadenza (NULL) è
+      // quello "di riferimento" per quel cliente ma non compare mai qui,
+      // perché non sta per scadere — coerente col badge che in quel caso
+      // mostra "—".
       const map = new Map()
-      for (const p of programs ?? []) {
-        const id = p.client_id
-        if (!map.has(id)) map.set(id, { id, name: p.profiles?.full_name, items: [] })
-        map.get(id).items.push({ type: 'Programma', label: p.name ?? 'Programma', expires_at: p.expires_at })
+      function addItem(row, type) {
+        if (!row?.expires_at) return
+        const id = row.client_id
+        if (!map.has(id)) map.set(id, { id, name: row.profiles?.full_name, items: [] })
+        map.get(id).items.push({ type, label: row.name ?? type, expires_at: row.expires_at })
       }
-      for (const d of diets ?? []) {
-        const id = d.client_id
-        if (!map.has(id)) map.set(id, { id, name: d.profiles?.full_name, items: [] })
-        map.get(id).items.push({ type: 'Dieta', label: d.name, expires_at: d.expires_at })
-      }
+      for (const row of farthestPrograms.values()) addItem(row, 'Programma')
+      for (const row of farthestDiets.values()) addItem(row, 'Dieta')
 
       const clients = Array.from(map.values()).sort((a, b) => {
         const minA = Math.min(...a.items.map(i => new Date(i.expires_at)))
@@ -103,7 +129,8 @@ function useExpiringItems() {
         return minA - minB
       })
 
-      // Bucket per cliente in base alla scadenza più imminente:
+      // Bucket per cliente in base alla scadenza più imminente tra quelle
+      // "di riferimento" (Programma e/o Dieta):
       //  - urgent: scaduti o in scadenza entro domenica di questa settimana
       //  - upcoming: in scadenza nella settimana successiva (lun–dom)
       const urgent = []

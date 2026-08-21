@@ -13,8 +13,8 @@ function useClients() {
         .from('profiles')
         .select(`
           id, full_name, email, phone, created_at,
-          workout_programs ( id, is_active, expires_at ),
-          diet_plans ( id, is_active, expires_at )
+          workout_programs ( id, starts_at, expires_at ),
+          diet_plans ( id, starts_at, expires_at )
         `)
         .eq('role', 'client')
         .order('full_name')
@@ -22,6 +22,30 @@ function useClients() {
       return data
     },
   })
+}
+
+// Stato calcolato dalle date (stessa logica di ClientDetail.jsx): 'future'
+// se non ancora iniziato, 'history' se scaduto, altrimenti 'active'.
+function getStatus(item) {
+  const today = new Date().toISOString().split('T')[0]
+  if (item.starts_at && item.starts_at > today) return 'future'
+  if (item.expires_at && item.expires_at < today) return 'history'
+  return 'active'
+}
+
+// Tra i soli elementi attivi, quello con la scadenza più lontana (nessuna
+// scadenza = "infinita", quindi vince su qualunque data). Stessa regola
+// usata per il badge in cima al dettaglio cliente: qui manteniamo la
+// coerenza mostrando lo stesso identico programma/dieta "di riferimento".
+function pickFarthestActive(items) {
+  const active = (items ?? []).filter(i => getStatus(i) === 'active')
+  if (!active.length) return null
+  return active.reduce((farthest, item) => {
+    if (!farthest) return item
+    if (!item.expires_at) return item          // nessuna scadenza = più lontana possibile
+    if (!farthest.expires_at) return farthest
+    return item.expires_at > farthest.expires_at ? item : farthest
+  }, null)
 }
 
 const PAGE_SIZE = 25
@@ -259,8 +283,11 @@ export function Clients() {
       )}
 
       {paginated?.map(client => {
-        const activeProgram = client.workout_programs?.find(p => p.is_active)
-        const activeDiet = client.diet_plans?.find(d => d.is_active)
+        // Stesso "programma/dieta di riferimento" mostrato nel badge in
+        // cima al dettaglio cliente: tra i soli attivi, quello con la
+        // scadenza più lontana.
+        const activeProgram = pickFarthestActive(client.workout_programs)
+        const activeDiet = pickFarthestActive(client.diet_plans)
         return (
           <Link
             key={client.id}

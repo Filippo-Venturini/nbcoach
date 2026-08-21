@@ -99,12 +99,24 @@ function useClient(id) {
 function useSaveProgram() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: async ({ clientId, programName, programNotes, programExpiry, stimulusMatrix, volumeTargets, plans, planVolumeTargets }) => {
-      await supabase.from('workout_programs').update({ is_active: false }).eq('client_id', clientId)
-
+    // NB: non disattiviamo più gli altri programmi del cliente prima di
+    // inserire: ora un cliente può avere più programmi "attivi" e "futuri"
+    // contemporaneamente. Lo stato (attivo/futuro/storico) viene calcolato
+    // a runtime dalle date (vedi getStatus in ClientDetail.jsx), non da
+    // un flag salvato in DB.
+    mutationFn: async ({ clientId, programName, programNotes, programStart, programExpiry, stimulusMatrix, volumeTargets, plans, planVolumeTargets }) => {
       const { data: program, error: progError } = await supabase
         .from('workout_programs')
-        .insert({ client_id: clientId, name: programName || null, notes: programNotes || null, expires_at: programExpiry || null, stimulus_matrix: stimulusMatrix ?? {}, volume_targets: volumeTargets ?? {}, is_active: true })
+        .insert({
+          client_id: clientId,
+          name: programName || null,
+          notes: programNotes || null,
+          starts_at: programStart || null,
+          expires_at: programExpiry || null,
+          stimulus_matrix: stimulusMatrix ?? {},
+          volume_targets: volumeTargets ?? {},
+          is_active: true,
+        })
         .select().single()
       if (progError) throw progError
 
@@ -143,6 +155,8 @@ function useSaveProgram() {
     onSuccess: (_, { clientId }) => {
       qc.invalidateQueries({ queryKey: ['workout-programs', clientId] })
       qc.invalidateQueries({ queryKey: ['last-program', clientId] })
+      qc.invalidateQueries({ queryKey: ['active-program', clientId] })
+      qc.invalidateQueries({ queryKey: ['expiring-items'] })
     },
   })
 }
@@ -510,6 +524,7 @@ export function NewWorkoutProgram() {
 
   const [programName, setProgramName] = useState('')
   const [programNotes, setProgramNotes] = useState('')
+  const [programStart, setProgramStart] = useState('')
   const [programExpiry, setProgramExpiry] = useState('')
   const [stimuli, setStimuli] = useState({})
   const [previousProgramSeeded, setPreviousProgramSeeded] = useState(false)
@@ -658,11 +673,15 @@ export function NewWorkoutProgram() {
 
   async function handleSave() {
     if (!programName.trim()) { setError('Dai un nome al programma'); return }
+    if (programStart && programExpiry && programStart > programExpiry) {
+      setError('La data di inizio deve precedere la scadenza')
+      return
+    }
     if (plans.some(p => !p.name.trim())) { setError('Dai un nome a ogni scheda'); return }
     if (plans.every(p => p.exercises.length === 0)) { setError('Aggiungi almeno un esercizio'); return }
     setError(null)
     try {
-      await saveProgram.mutateAsync({ clientId, programName, programNotes, programExpiry, stimulusMatrix: stimuli, volumeTargets: cleanVolumeTargets(volumeTargets), plans, planVolumeTargets })
+      await saveProgram.mutateAsync({ clientId, programName, programNotes, programStart, programExpiry, stimulusMatrix: stimuli, volumeTargets: cleanVolumeTargets(volumeTargets), plans, planVolumeTargets })
       navigate(`/clients/${clientId}?tab=scheda`)
     } catch (err) {
       setError(err.message)
@@ -689,13 +708,35 @@ export function NewWorkoutProgram() {
               />
             </div>
             <div>
+              <p className="text-xs font-heading uppercase tracking-wider text-slate-500 mb-0.5">Data inizio <span className="text-navy-500 normal-case tracking-normal">(opzionale)</span></p>
+              <div className="flex items-center gap-2">
+                <input
+                  type="date"
+                  className="bg-transparent text-white border-0 border-b border-navy-600 focus:border-gold-500 focus:outline-none px-0 text-sm transition-colors"
+                  style={{ colorScheme: 'dark' }}
+                  value={programStart}
+                  onChange={e => setProgramStart(e.target.value)}
+                />
+                {programStart && (
+                  <button
+                    type="button"
+                    onClick={() => setProgramStart('')}
+                    className="text-slate-600 hover:text-red-400 transition-colors shrink-0"
+                    title="Rimuovi data inizio"
+                  >
+                    <X size={14} />
+                  </button>
+                )}
+              </div>
+            </div>
+            <div>
               <p className="text-xs font-heading uppercase tracking-wider text-slate-500 mb-0.5">Scadenza <span className="text-navy-500 normal-case tracking-normal">(opzionale)</span></p>
               <div className="flex items-center gap-2">
                 <input
                   type="date"
                   className="bg-transparent text-white border-0 border-b border-navy-600 focus:border-gold-500 focus:outline-none px-0 text-sm transition-colors"
                   style={{ colorScheme: 'dark' }}
-                  min={new Date().toISOString().split('T')[0]}
+                  min={programStart || new Date().toISOString().split('T')[0]}
                   value={programExpiry}
                   onChange={e => setProgramExpiry(e.target.value)}
                 />

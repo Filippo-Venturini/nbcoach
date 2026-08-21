@@ -161,16 +161,24 @@ function useUpdateProgramNotes() {
   })
 }
 
+// Programma "in evidenza" per la card riassuntiva in testa alla pagina cliente:
+// non ci basiamo più su un flag is_active esclusivo (ora un cliente può avere
+// più programmi attivi/futuri insieme), calcoliamo l'attivo per data e, se ce
+// ne sono più d'uno, mostriamo quello con scadenza più vicina.
 function useActiveProgram(clientId) {
   return useQuery({
     queryKey: ['active-program', clientId],
     queryFn: async () => {
+      const today = new Date().toISOString().split('T')[0]
       const { data } = await supabase
         .from('workout_programs')
-        .select('id, name, expires_at')
+        .select('id, name, starts_at, expires_at')
         .eq('client_id', clientId)
-        .eq('is_active', true)
-        .order('created_at', { ascending: false })
+        .or(`starts_at.is.null,starts_at.lte.${today}`)
+        .or(`expires_at.is.null,expires_at.gte.${today}`)
+        // Scadenza più lontana tra gli attivi: nessuna scadenza (NULL) è
+        // "infinita" quindi vince su qualunque data → va per prima.
+        .order('expires_at', { ascending: false, nullsFirst: true })
         .limit(1)
         .maybeSingle()
       return data
@@ -182,12 +190,14 @@ function useActiveDietInfo(clientId) {
   return useQuery({
     queryKey: ['active-diet-info', clientId],
     queryFn: async () => {
+      const today = new Date().toISOString().split('T')[0]
       const { data } = await supabase
         .from('diet_plans')
-        .select('id, name, expires_at')
+        .select('id, name, starts_at, expires_at')
         .eq('client_id', clientId)
-        .eq('is_active', true)
-        .order('created_at', { ascending: false })
+        .or(`starts_at.is.null,starts_at.lte.${today}`)
+        .or(`expires_at.is.null,expires_at.gte.${today}`)
+        .order('expires_at', { ascending: false, nullsFirst: true })
         .limit(1)
         .maybeSingle()
       return data
@@ -195,13 +205,77 @@ function useActiveDietInfo(clientId) {
   })
 }
 
-function useUpdateProgramExpiry() {
+// Elimina un programma e tutto ciò che dipende da lui (schede + esercizi),
+// esplicitamente e in ordine, così non restano residui in DB indipendentemente
+// da come sono configurate le foreign key.
+function useDeleteProgram() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: async ({ clientId, programId, expiresAt }) => {
+    mutationFn: async ({ clientId, programId }) => {
+      const { data: planRows, error: planFetchError } = await supabase
+        .from('workout_plans')
+        .select('id')
+        .eq('program_id', programId)
+      if (planFetchError) throw planFetchError
+
+      const planIds = (planRows ?? []).map(p => p.id)
+      if (planIds.length) {
+        const { error: exError } = await supabase.from('workout_exercises').delete().in('plan_id', planIds)
+        if (exError) throw exError
+      }
+
+      const { error: plansError } = await supabase.from('workout_plans').delete().eq('program_id', programId)
+      if (plansError) throw plansError
+
+      const { error: progError } = await supabase.from('workout_programs').delete().eq('id', programId)
+      if (progError) throw progError
+    },
+    onSuccess: (_, { clientId }) => {
+      qc.invalidateQueries({ queryKey: ['workout-programs', clientId] })
+      qc.invalidateQueries({ queryKey: ['active-program', clientId] })
+      qc.invalidateQueries({ queryKey: ['last-program', clientId] })
+      qc.invalidateQueries({ queryKey: ['expiring-items'] })
+      qc.invalidateQueries({ queryKey: ['home-kpis'] })
+      qc.invalidateQueries({ queryKey: ['clients'] })
+    },
+  })
+}
+
+// Elimina una dieta: prima il PDF dal bucket storage, poi la riga in DB.
+// Se la rimozione dal bucket fallisce, la riga non viene toccata (l'errore
+// propaga e la modale resta aperta), così non si perde il riferimento a un
+// file che è ancora effettivamente su storage.
+function useDeleteDiet() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async ({ clientId, dietId, pdfPath }) => {
+      if (pdfPath) {
+        const { error: storageError } = await supabase.storage.from('diet-pdfs').remove([pdfPath])
+        if (storageError) throw storageError
+      }
+      const { error } = await supabase.from('diet_plans').delete().eq('id', dietId)
+      if (error) throw error
+    },
+    onSuccess: (_, { clientId }) => {
+      qc.invalidateQueries({ queryKey: ['diet-plans', clientId] })
+      qc.invalidateQueries({ queryKey: ['active-diet-info', clientId] })
+      qc.invalidateQueries({ queryKey: ['expiring-items'] })
+      qc.invalidateQueries({ queryKey: ['home-kpis'] })
+      qc.invalidateQueries({ queryKey: ['clients'] })
+    },
+  })
+}
+
+// Aggiorna inizio + fine insieme, usato dall'editor inline nelle box di
+// programma/dieta: è l'unico punto dove le date restano modificabili, dopo
+// che il badge riassuntivo in testa pagina è diventato di sola lettura.
+function useUpdateProgramDates() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async ({ clientId, programId, starts_at, expires_at }) => {
       const { error } = await supabase
         .from('workout_programs')
-        .update({ expires_at: expiresAt || null })
+        .update({ starts_at, expires_at })
         .eq('id', programId)
       if (error) throw error
     },
@@ -213,13 +287,13 @@ function useUpdateProgramExpiry() {
   })
 }
 
-function useUpdateDietExpiry() {
+function useUpdateDietDates() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: async ({ clientId, dietId, expiresAt }) => {
+    mutationFn: async ({ clientId, dietId, starts_at, expires_at }) => {
       const { error } = await supabase
         .from('diet_plans')
-        .update({ expires_at: expiresAt || null })
+        .update({ starts_at, expires_at })
         .eq('id', dietId)
       if (error) throw error
     },
@@ -313,6 +387,47 @@ function useWeekPhotos(clientId, weekKey, weekStart, enabled) {
   })
 }
 
+// Elimina TUTTE le foto di una settimana in un colpo solo: prima i file dal
+// bucket (batch), poi le righe in DB (batch). Se lo storage fallisce non
+// tocchiamo il DB, così non resta un riferimento a file ancora presenti.
+function useDeleteWeekPhotos() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async ({ clientId, weekStart }) => {
+      const weekEnd = new Date(weekStart)
+      weekEnd.setDate(weekEnd.getDate() + 7)
+
+      const { data: rows, error: fetchError } = await supabase
+        .from('progress_photos')
+        .select('id, photo_url')
+        .eq('client_id', clientId)
+        .gte('created_at', weekStart.toISOString())
+        .lt('created_at', weekEnd.toISOString())
+      if (fetchError) throw fetchError
+
+      const paths = (rows ?? []).map(r => r.photo_url).filter(Boolean)
+      if (paths.length) {
+        const { error: storageError } = await supabase.storage.from('progress-photos').remove(paths)
+        if (storageError) throw storageError
+      }
+
+      const ids = (rows ?? []).map(r => r.id)
+      if (ids.length) {
+        const { error: deleteError } = await supabase.from('progress_photos').delete().in('id', ids)
+        if (deleteError) throw deleteError
+      }
+    },
+    onSuccess: (_, { clientId }) => {
+      // 'photo-weeks' e 'week-photos' sono chiavizzate anche per periodo/settimana,
+      // che qui non conosciamo tutte: invalidiamo tutte le varianti per questo cliente.
+      qc.invalidateQueries({ predicate: q => q.queryKey[0] === 'photo-weeks' && q.queryKey[1] === clientId })
+      qc.invalidateQueries({ predicate: q => q.queryKey[0] === 'week-photos' && q.queryKey[1] === clientId })
+      qc.invalidateQueries({ queryKey: ['recent-photos'] })
+    },
+  })
+
+}
+
 // ─── Helpers ──────────────────────────────────────────────────
 
 function normalizeExercise(ex) {
@@ -361,6 +476,19 @@ function expiryInfo(expiresAt) {
   return { label: `Scade il ${fmt(expiresAt)}`,          cls: 'text-slate-500' }
 }
 
+// Stato calcolato di un programma/dieta a partire dalle date, non da un
+// flag salvato in DB: 'future' se non ancora iniziato, 'history' se
+// scaduto, altrimenti 'active'. Un record senza starts_at è considerato
+// già iniziato (retrocompatibilità con i record creati prima di questa
+// modifica). Essendo calcolato ad ogni render, la transizione tra stati
+// è automatica: non serve nessun cron/job che aggiorni un flag.
+function getStatus(item) {
+  const today = new Date().toISOString().split('T')[0]
+  if (item.starts_at && item.starts_at > today) return 'future'
+  if (item.expires_at && item.expires_at < today) return 'history'
+  return 'active'
+}
+
 // Campo in sola lettura reso IDENTICO all'input della modifica (stesse
 // classi .input => stessi colori, bordi, dimensioni testo). Mostra il
 // placeholder quando vuoto, esattamente come farebbe l'input.
@@ -371,6 +499,84 @@ function ReadBox({ value, placeholder = '—' }) {
       {empty ? <span className="text-slate-500">{placeholder}</span> : value}
     </div>
   )
+}
+
+// Etichetta inline dell'intervallo di date, cliccabile per modificarle.
+// Usata sia nelle box dei programmi che in quelle delle diete.
+function DateRangeEditor({ startsAt, expiresAt, onSave, isSaving }) {
+  const [editing, setEditing] = useState(false)
+  const [start, setStart] = useState(startsAt ?? '')
+  const [end, setEnd] = useState(expiresAt ?? '')
+
+  useEffect(() => {
+    setStart(startsAt ?? '')
+    setEnd(expiresAt ?? '')
+  }, [startsAt, expiresAt])
+
+  async function handleSave() {
+    await onSave({ starts_at: start || null, expires_at: end || null })
+    setEditing(false)
+  }
+
+  function handleCancel() {
+    setStart(startsAt ?? '')
+    setEnd(expiresAt ?? '')
+    setEditing(false)
+  }
+
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        onClick={e => { e.stopPropagation(); setEditing(true) }}
+        className="flex items-center gap-1.5 text-slate-500 hover:text-white text-xs transition-colors shrink-0"
+        title="Modifica date"
+      >
+        <span>{startsAt ? fmt(startsAt) : '—'} → {expiresAt ? fmt(expiresAt) : '—'}</span>
+        <Pencil size={11} />
+      </button>
+    )
+  }
+
+  return (
+    <div className="flex items-center gap-1.5 shrink-0" onClick={e => e.stopPropagation()}>
+      <input
+        type="date"
+        className="input text-xs py-1 w-32"
+        style={{ colorScheme: 'dark' }}
+        value={start}
+        onChange={e => setStart(e.target.value)}
+      />
+      <span className="text-slate-600 text-xs">→</span>
+      <input
+        type="date"
+        className="input text-xs py-1 w-32"
+        style={{ colorScheme: 'dark' }}
+        value={end}
+        min={start || undefined}
+        onChange={e => setEnd(e.target.value)}
+      />
+      <button onClick={handleSave} disabled={isSaving} className="btn-primary text-xs px-2 py-1 disabled:opacity-50">
+        <Check size={12} />
+      </button>
+      <button onClick={handleCancel} className="btn-ghost text-xs px-2 py-1">
+        <X size={12} />
+      </button>
+    </div>
+  )
+}
+
+// Badge di stato per programmi/diete (null per lo storico: niente badge)
+function StatusBadge({ status }) {
+  if (status === 'active') return <span className="badge-gold">Attivo</span>
+  if (status === 'future') {
+    return (
+      <span className="text-xs font-heading uppercase tracking-wider px-2 py-0.5 border border-blue-400/40 text-blue-300 bg-blue-900/20">
+        In programma
+      </span>
+    )
+  }
+  return null
 }
 
 function ExerciseViewRow({ ex, onVideoToggle, videoId }) {
@@ -612,81 +818,34 @@ function PlanVolumeCounter({ plan, draft }) {
 
 // ─── Expiry cards ─────────────────────────────────────────────
 
-function ExpiryCard({ icon: Icon, type, item, onSave, isSaving }) {
-  const [editing, setEditing] = useState(false)
-  const [dateValue, setDateValue] = useState(item?.expires_at ?? '')
-
+// Sola lettura: mostra la scadenza del programma/dieta "di riferimento"
+// (il più lontano tra gli attivi, vedi useActiveProgram/useActiveDietInfo).
+// Le date si modificano solo dai box dei singoli programmi/diete più sotto,
+// non più da qui.
+function ExpiryCard({ icon: Icon, type, item }) {
   const days = item?.expires_at ? Math.ceil((new Date(item.expires_at) - new Date()) / (1000 * 60 * 60 * 24)) : null
   const urgent = days !== null && days <= 7
   const dateColor = days === null ? 'text-slate-600' : days < 0 ? 'text-red-400' : days <= 7 ? 'text-amber-400' : 'text-white'
 
-  async function handleSave() {
-    await onSave(dateValue)
-    setEditing(false)
-  }
-
-  async function handleRemove() {
-    setDateValue('')
-    await onSave('')
-    setEditing(false)
-  }
-
   return (
-    <div className={`card flex items-center justify-between gap-3 ${urgent ? 'border-amber-500/30' : ''}`}>
-      <div className="flex items-center gap-3">
-        <div className={`w-8 h-8 flex items-center justify-center shrink-0 ${urgent ? 'bg-amber-900/30' : 'bg-navy-900'}`}>
-          <Icon size={15} className={urgent ? 'text-amber-400' : 'text-gold-500'} />
-        </div>
-          <div>
-            <p className="text-xs font-heading uppercase tracking-wider text-slate-500">{type}</p>
-            {!editing && (
-              <p className={`text-base font-heading font-bold uppercase tracking-wider mt-0.5 ${dateColor}`}>
-                <span className="text-slate-500 mr-1.5">Scadenza:</span>
-                {item?.expires_at ? fmt(item.expires_at).toUpperCase() : '—'}
-              </p>
-            )}
-            {editing && (
-              <div className="flex items-center gap-2 mt-1.5">
-                <input
-                  type="date"
-                  className="input text-xs py-1 w-36"
-                  style={{ colorScheme: 'dark' }}
-                  min={new Date().toISOString().split('T')[0]}
-                  value={dateValue}
-                  onChange={e => setDateValue(e.target.value)}
-                  autoFocus
-                />
-                <button onClick={handleSave} disabled={isSaving} className="btn-primary text-xs px-2 py-1 disabled:opacity-50">
-                  <Check size={12} />
-                </button>
-                <button onClick={() => { setDateValue(item?.expires_at ?? ''); setEditing(false) }} className="btn-ghost text-xs px-2 py-1">
-                  <X size={12} />
-                </button>
-                {item?.expires_at && (
-                  <button onClick={handleRemove} disabled={isSaving} className="btn-ghost text-xs px-2 py-1 text-red-400 hover:text-red-300 disabled:opacity-50" title="Rimuovi scadenza">
-                    <Trash2 size={12} />
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-
-      {item && !editing && (
-        <button
-          onClick={() => { setDateValue(item.expires_at ?? ''); setEditing(true) }}
-          className="p-1.5 text-slate-600 hover:text-white transition-colors shrink-0"
-        >
-          <Pencil size={13} />
-        </button>
-      )}
+    <div className={`card flex items-center gap-3 ${urgent ? 'border-amber-500/30' : ''}`}>
+      <div className={`w-8 h-8 flex items-center justify-center shrink-0 ${urgent ? 'bg-amber-900/30' : 'bg-navy-900'}`}>
+        <Icon size={15} className={urgent ? 'text-amber-400' : 'text-gold-500'} />
+      </div>
+      <div>
+        <p className="text-xs font-heading uppercase tracking-wider text-slate-500">{type}</p>
+        <p className={`text-base font-heading font-bold uppercase tracking-wider mt-0.5 ${dateColor}`}>
+          <span className="text-slate-500 mr-1.5">Scadenza:</span>
+          {item?.expires_at ? fmt(item.expires_at).toUpperCase() : '—'}
+        </p>
+      </div>
     </div>
   )
 }
 
 // ─── Tab: Scheda ──────────────────────────────────────────────
 
-function PlanCard({ plan, programIsActive, clientId, onDraftChange }) {
+function PlanCard({ plan, editable, clientId, onDraftChange }) {
   const [expanded, setExpanded] = useState(false)
   const [editing, setEditing] = useState(false)
   const [videoId, setVideoId] = useState(null)
@@ -763,7 +922,7 @@ function PlanCard({ plan, programIsActive, clientId, onDraftChange }) {
           </div>
         </button>
         <div className="flex items-center gap-2">
-          {programIsActive && !editing && (
+          {editable && !editing && (
             <button onClick={startEdit} className="btn-ghost text-xs px-2 py-1">
               <Pencil size={12} /> Modifica
             </button>
@@ -836,12 +995,17 @@ function PlanCard({ plan, programIsActive, clientId, onDraftChange }) {
 }
 
 function ProgramCard({ program, clientId }) {
-  const [open, setOpen] = useState(program.is_active)
+  const status = getStatus(program)
+  const [open, setOpen] = useState(status === 'active')
   const [editingNotes, setEditingNotes] = useState(false)
   const [notesValue, setNotesValue] = useState(program.notes ?? '')
   // Bozze delle schede in modifica, per il contatore di volume del programma
   const [planDrafts, setPlanDrafts] = useState({})
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deleteError, setDeleteError] = useState(null)
   const updateNotes = useUpdateProgramNotes()
+  const updateDates = useUpdateProgramDates()
+  const deleteProgram = useDeleteProgram()
 
   const handleDraftChange = useCallback((planId, draft) => {
     setPlanDrafts(prev => {
@@ -856,8 +1020,6 @@ function ProgramCard({ program, clientId }) {
     })
   }, [])
 
-  const expiryStatus = program.is_active ? expiryInfo(program.expires_at) : null
-
   async function saveNotes() {
     await updateNotes.mutateAsync({ clientId, programId: program.id, notes: notesValue })
     setEditingNotes(false)
@@ -868,23 +1030,46 @@ function ProgramCard({ program, clientId }) {
     setEditingNotes(false)
   }
 
+  async function handleDeleteProgram() {
+    setDeleteError(null)
+    try {
+      await deleteProgram.mutateAsync({ clientId, programId: program.id })
+      setConfirmDelete(false)
+    } catch (err) {
+      setDeleteError('Errore: ' + (err.message || 'eliminazione non riuscita'))
+    }
+  }
+
   return (
-    <div className={`card mb-4 ${program.is_active ? 'border-gold-500/30' : ''}`}>
-      {/* Header: solo badge + nome */}
-      <button className="w-full flex items-center justify-between gap-4" onClick={() => setOpen(o => !o)}>
-        <div className="flex items-center gap-3">
+    <div className={`card mb-4 ${status === 'active' ? 'border-gold-500/30' : status === 'future' ? 'border-blue-500/20' : ''}`}>
+      {/* Header: badge + nome + date, editabili senza aprire/chiudere la card */}
+      <div className="flex items-center justify-between gap-4">
+        <button className="flex items-center gap-3 flex-1 text-left" onClick={() => setOpen(o => !o)}>
           <p className="font-heading font-bold italic uppercase tracking-wide text-white text-lg text-left">
             {program.name ?? 'Programma'}
           </p>
-          {program.is_active && <span className="badge-gold">Attivo</span>}
+          <StatusBadge status={status} />
+        </button>
+        <div className="flex items-center gap-3 shrink-0">
+          <DateRangeEditor
+            startsAt={program.starts_at}
+            expiresAt={program.expires_at}
+            isSaving={updateDates.isPending}
+            onSave={dates => updateDates.mutateAsync({ clientId, programId: program.id, ...dates })}
+          />
+          <button
+            type="button"
+            onClick={e => { e.stopPropagation(); setConfirmDelete(true) }}
+            className="text-slate-600 hover:text-red-400 transition-colors p-1"
+            title="Elimina programma"
+          >
+            <Trash2 size={14} />
+          </button>
+          <button onClick={() => setOpen(o => !o)} className="text-slate-500 hover:text-white transition-colors">
+            {open ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+          </button>
         </div>
-        <div className="flex items-center gap-3">
-          <span className="text-slate-500 text-xs">
-            {fmt(program.created_at)}{program.expires_at ? ` — ${fmt(program.expires_at)}` : ''}
-          </span>
-          {open ? <ChevronUp size={16} className="text-slate-500 shrink-0" /> : <ChevronDown size={16} className="text-slate-500 shrink-0" />}
-        </div>
-      </button>
+      </div>
 
       {open && (
         <div className="mt-3 space-y-3">
@@ -898,14 +1083,14 @@ function ProgramCard({ program, clientId }) {
                 <span className="text-slate-300">Note programma: </span>
                 <span className="text-slate-400">{notesValue}</span>
               </p>
-              {program.is_active && (
+              {status !== 'history' && (
                 <button onClick={() => setEditingNotes(true)} className="p-1 text-slate-600 hover:text-white transition-colors shrink-0 mt-0.5">
                   <Pencil size={12} />
                 </button>
               )}
             </div>
           )}
-          {!editingNotes && !notesValue && program.is_active && (
+          {!editingNotes && !notesValue && status !== 'history' && (
             <button onClick={() => setEditingNotes(true)} className="text-slate-600 hover:text-slate-400 text-xs transition-colors text-left">
               + Aggiungi note
             </button>
@@ -937,13 +1122,24 @@ function ProgramCard({ program, clientId }) {
               <PlanCard
                 key={plan.id}
                 plan={plan}
-                programIsActive={program.is_active}
+                editable={status !== 'history'}
                 clientId={clientId}
                 onDraftChange={handleDraftChange}
               />
             ))}
           </div>
         </div>
+      )}
+
+      {confirmDelete && (
+        <ConfirmModal
+          message="Eliminare questo programma?"
+          detail={deleteError ?? `"${program.name ?? 'Programma'}" e tutte le sue schede/esercizi verranno eliminati definitivamente. L'azione è irreversibile.`}
+          confirmLabel="ELIMINA"
+          isPending={deleteProgram.isPending}
+          onConfirm={handleDeleteProgram}
+          onCancel={() => { setConfirmDelete(false); setDeleteError(null) }}
+        />
       )}
     </div>
   )
@@ -954,8 +1150,12 @@ function TabScheda({ clientId }) {
 
   if (isLoading) return <p className="text-slate-500 text-sm">Caricamento...</p>
 
-  const active = programs?.find(p => p.is_active)
-  const history = programs?.filter(p => !p.is_active)
+  // Sezioni calcolate dalle date, non da un flag salvato: la transizione
+  // futuro → attivo → storico avviene da sola quando cambia la data odierna.
+  const active = programs?.filter(p => getStatus(p) === 'active') ?? []
+  const future = (programs?.filter(p => getStatus(p) === 'future') ?? [])
+    .sort((a, b) => (a.starts_at ?? '').localeCompare(b.starts_at ?? ''))
+  const history = programs?.filter(p => getStatus(p) === 'history') ?? []
 
   return (
     <div className="max-w-4xl mx-auto">
@@ -975,9 +1175,16 @@ function TabScheda({ clientId }) {
         </div>
       )}
 
-      {active && <ProgramCard program={active} clientId={clientId} />}
+      {active.map(prog => <ProgramCard key={prog.id} program={prog} clientId={clientId} />)}
 
-      {history?.length > 0 && (
+      {future.length > 0 && (
+        <div className="mt-6">
+          <p className="text-xs font-heading uppercase tracking-wider text-slate-500 mb-4">Programmi futuri</p>
+          {future.map(prog => <ProgramCard key={prog.id} program={prog} clientId={clientId} />)}
+        </div>
+      )}
+
+      {history.length > 0 && (
         <div className="mt-6">
           <p className="text-xs font-heading uppercase tracking-wider text-slate-500 mb-4">Storico</p>
           {history.map(prog => <ProgramCard key={prog.id} program={prog} clientId={clientId} />)}
@@ -992,10 +1199,15 @@ function TabScheda({ clientId }) {
 function TabDieta({ clientId }) {
   const { data: diets, isLoading } = useDietPlans(clientId)
   const qc = useQueryClient()
+  const updateDietDates = useUpdateDietDates()
+  const deleteDiet = useDeleteDiet()
   const [uploading, setUploading] = useState(false)
   const [planName, setPlanName] = useState('')
+  const [planStart, setPlanStart] = useState('')
   const [planExpiry, setPlanExpiry] = useState('')
   const [uploadError, setUploadError] = useState(null)
+  const [deleteTarget, setDeleteTarget] = useState(null)
+  const [deleteError, setDeleteError] = useState(null)
 
   async function handleUpload(e) {
     const file = e.target.files?.[0]
@@ -1012,13 +1224,14 @@ function TabDieta({ clientId }) {
         .upload(path, file, { contentType: 'application/pdf' })
       if (storageError) throw new Error(`Storage: ${storageError.message}`)
 
-      await supabase.from('diet_plans').update({ is_active: false }).eq('client_id', clientId)
-
+      // Non disattiviamo più le altre diete: possono coesistere più diete
+      // attive/future, esattamente come per i programmi di allenamento.
       const { error: insertError } = await supabase.from('diet_plans').insert({
         client_id: clientId,
         name: planName,
         pdf_url: path,
         is_active: true,
+        starts_at: planStart || null,
         expires_at: planExpiry || null,
       })
       if (insertError) throw new Error(`DB: ${insertError.message}`)
@@ -1027,6 +1240,7 @@ function TabDieta({ clientId }) {
       qc.invalidateQueries({ queryKey: ['active-diet-info', clientId] })
       qc.invalidateQueries({ queryKey: ['expiring-items'] })
       setPlanName('')
+      setPlanStart('')
       setPlanExpiry('')
     } catch (err) {
       setUploadError(err.message)
@@ -1035,10 +1249,26 @@ function TabDieta({ clientId }) {
     }
   }
 
+  function saveDietDates(dietId, dates) {
+    return updateDietDates.mutateAsync({ clientId, dietId, ...dates })
+  }
+
+  async function handleDeleteDiet() {
+    setDeleteError(null)
+    try {
+      await deleteDiet.mutateAsync({ clientId, dietId: deleteTarget.id, pdfPath: deleteTarget.pdf_url })
+      setDeleteTarget(null)
+    } catch (err) {
+      setDeleteError('Errore: ' + (err.message || 'eliminazione non riuscita'))
+    }
+  }
+
   if (isLoading) return <p className="text-slate-500 text-sm">Caricamento...</p>
 
-  const activeDiet = diets?.find(d => d.is_active)
-  const oldDiets = diets?.filter(d => !d.is_active)
+  const activeDiets = diets?.filter(d => getStatus(d) === 'active') ?? []
+  const futureDiets = (diets?.filter(d => getStatus(d) === 'future') ?? [])
+    .sort((a, b) => (a.starts_at ?? '').localeCompare(b.starts_at ?? ''))
+  const oldDiets = diets?.filter(d => getStatus(d) === 'history') ?? []
 
   return (
     <div className="max-w-4xl mx-auto">
@@ -1046,9 +1276,9 @@ function TabDieta({ clientId }) {
 
       <div className="card mb-6">
         <p className="text-xs font-heading uppercase tracking-wider text-slate-400 mb-3">Carica nuova dieta (PDF)</p>
-        <div className="flex gap-3 items-start">
+        <div className="flex gap-3 items-start flex-wrap">
           <input
-            className="input flex-1"
+            className="input flex-1 min-w-48"
             placeholder="Nome (es. Bulk Fase 2)"
             value={planName}
             onChange={e => setPlanName(e.target.value)}
@@ -1056,9 +1286,29 @@ function TabDieta({ clientId }) {
           <div className="flex items-center gap-1.5 shrink-0">
             <input
               type="date"
-              className="input w-44"
+              className="input w-40"
               style={{ colorScheme: 'dark' }}
-              min={new Date().toISOString().split('T')[0]}
+              value={planStart}
+              onChange={e => setPlanStart(e.target.value)}
+              title="Data inizio (opzionale)"
+            />
+            {planStart && (
+              <button
+                type="button"
+                onClick={() => setPlanStart('')}
+                className="text-slate-600 hover:text-red-400 transition-colors"
+                title="Rimuovi data inizio"
+              >
+                <X size={14} />
+              </button>
+            )}
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <input
+              type="date"
+              className="input w-40"
+              style={{ colorScheme: 'dark' }}
+              min={planStart || undefined}
               value={planExpiry}
               onChange={e => setPlanExpiry(e.target.value)}
               title="Scadenza (opzionale)"
@@ -1090,23 +1340,72 @@ function TabDieta({ clientId }) {
         )}
       </div>
 
-      {activeDiet && (
-        <div className="card mb-4 border-gold-500/30">
-          <div className="flex items-center justify-between mb-3">
-            <div>
-              <span className="badge-gold mr-2">Attiva</span>
-              <span className="font-heading font-bold text-lg text-white">{activeDiet.name}</span>
+      {activeDiets.map(diet => (
+        <div key={diet.id} className="card mb-4 border-gold-500/30">
+          <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
+            <div className="flex items-center gap-2">
+              <span className="badge-gold">Attiva</span>
+              <span className="font-heading font-bold text-lg text-white">{diet.name}</span>
             </div>
-            <a href={activeDiet.signedUrl} target="_blank" rel="noopener noreferrer" className="btn-ghost text-sm">
-              <ExternalLink size={14} /> Apri PDF
-            </a>
+            <div className="flex items-center gap-3">
+              <DateRangeEditor
+                startsAt={diet.starts_at}
+                expiresAt={diet.expires_at}
+                isSaving={updateDietDates.isPending}
+                onSave={dates => saveDietDates(diet.id, dates)}
+              />
+              <a href={diet.signedUrl} target="_blank" rel="noopener noreferrer" className="btn-ghost text-sm">
+                <ExternalLink size={14} /> Apri PDF
+              </a>
+              <button
+                type="button"
+                onClick={() => setDeleteTarget(diet)}
+                className="text-slate-600 hover:text-red-400 transition-colors p-1.5"
+                title="Elimina dieta"
+              >
+                <Trash2 size={14} />
+              </button>
+            </div>
           </div>
 
-          <iframe src={activeDiet.signedUrl} className="w-full h-96 border-0" title="Dieta" />
+          <iframe src={diet.signedUrl} className="w-full h-96 border-0" title={diet.name} />
+        </div>
+      ))}
+
+      {futureDiets.length > 0 && (
+        <div className="mb-6">
+          <p className="text-xs font-heading uppercase tracking-wider text-slate-500 mb-3">Diete future</p>
+          {futureDiets.map(diet => (
+            <div key={diet.id} className="card mb-2 flex items-center justify-between gap-3 flex-wrap">
+              <div className="flex items-center gap-2">
+                <StatusBadge status="future" />
+                <span className="font-heading font-bold text-white">{diet.name}</span>
+              </div>
+              <div className="flex items-center gap-3">
+                <DateRangeEditor
+                  startsAt={diet.starts_at}
+                  expiresAt={diet.expires_at}
+                  isSaving={updateDietDates.isPending}
+                  onSave={dates => saveDietDates(diet.id, dates)}
+                />
+                <a href={diet.signedUrl} target="_blank" rel="noopener noreferrer" className="btn-ghost text-xs px-3 py-1.5">
+                  <ExternalLink size={12} /> PDF
+                </a>
+                <button
+                  type="button"
+                  onClick={() => setDeleteTarget(diet)}
+                  className="text-slate-600 hover:text-red-400 transition-colors p-1"
+                  title="Elimina dieta"
+                >
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            </div>
+          ))}
         </div>
       )}
 
-      {!activeDiet && !oldDiets?.length && (
+      {!activeDiets.length && !futureDiets.length && !oldDiets?.length && (
         <div className="card text-center py-10"><p className="text-slate-500">Nessuna dieta assegnata</p></div>
       )}
 
@@ -1121,12 +1420,33 @@ function TabDieta({ clientId }) {
                   {fmt(diet.created_at)}{diet.expires_at ? ` — ${fmt(diet.expires_at)}` : ''}
                 </span>
               </div>
-              <a href={diet.signedUrl} target="_blank" rel="noopener noreferrer" className="btn-ghost text-xs px-3 py-1.5">
-                <ExternalLink size={12} /> PDF
-              </a>
+              <div className="flex items-center gap-1">
+                <a href={diet.signedUrl} target="_blank" rel="noopener noreferrer" className="btn-ghost text-xs px-3 py-1.5">
+                  <ExternalLink size={12} /> PDF
+                </a>
+                <button
+                  type="button"
+                  onClick={() => setDeleteTarget(diet)}
+                  className="text-slate-600 hover:text-red-400 transition-colors p-1"
+                  title="Elimina dieta"
+                >
+                  <Trash2 size={13} />
+                </button>
+              </div>
             </div>
           ))}
         </div>
+      )}
+
+      {deleteTarget && (
+        <ConfirmModal
+          message="Eliminare questa dieta?"
+          detail={deleteError ?? `"${deleteTarget.name}" e il relativo PDF verranno eliminati definitivamente da database e storage. L'azione è irreversibile.`}
+          confirmLabel="ELIMINA"
+          isPending={deleteDiet.isPending}
+          onConfirm={handleDeleteDiet}
+          onCancel={() => { setDeleteTarget(null); setDeleteError(null) }}
+        />
       )}
     </div>
   )
@@ -1158,6 +1478,8 @@ function PhotoCarousel({ photos }) {
               <img
                 src={photo.signedUrl}
                 alt="Progress"
+                loading="lazy"
+                decoding="async"
                 className="w-full aspect-square object-cover hover:opacity-80 transition-opacity"
               />
             </a>
@@ -1186,22 +1508,44 @@ function PhotoCarousel({ photos }) {
 
 function WeekRow({ week, clientId }) {
   const [open, setOpen] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deleteError, setDeleteError] = useState(null)
   const { data: photos, isLoading } = useWeekPhotos(clientId, week.key, week.weekStart, open)
+  const deleteWeek = useDeleteWeekPhotos()
+
+  async function handleDeleteWeek() {
+    setDeleteError(null)
+    try {
+      await deleteWeek.mutateAsync({ clientId, weekStart: week.weekStart })
+      setConfirmDelete(false)
+    } catch (err) {
+      setDeleteError('Errore: ' + (err.message || 'eliminazione non riuscita'))
+    }
+  }
 
   return (
     <div className="card mb-3">
-      <button className="w-full flex items-center justify-between gap-4" onClick={() => setOpen(o => !o)}>
-        <div className="text-left">
+      <div className="flex items-center justify-between gap-4">
+        <button className="flex-1 text-left" onClick={() => setOpen(o => !o)}>
           <p className="font-heading font-bold text-white">
             {fmt(week.weekStart, { day: '2-digit', month: 'long', year: 'numeric' })}
           </p>
           <p className="text-slate-500 text-xs mt-0.5">{week.count} foto</p>
+        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => setConfirmDelete(true)}
+            className="text-slate-600 hover:text-red-400 transition-colors p-1"
+            title="Elimina tutte le foto di questa settimana"
+          >
+            <Trash2 size={15} />
+          </button>
+          <button onClick={() => setOpen(o => !o)} className="text-slate-500 hover:text-white transition-colors">
+            {open ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+          </button>
         </div>
-        {open
-          ? <ChevronUp size={16} className="text-slate-500 shrink-0" />
-          : <ChevronDown size={16} className="text-slate-500 shrink-0" />
-        }
-      </button>
+      </div>
 
       {open && (
         <div className="mt-4 border-t border-navy-700 pt-4">
@@ -1212,6 +1556,17 @@ function WeekRow({ week, clientId }) {
               : <p className="text-slate-500 text-sm">Nessuna foto</p>
           }
         </div>
+      )}
+
+      {confirmDelete && (
+        <ConfirmModal
+          message="Eliminare tutte le foto di questa settimana?"
+          detail={deleteError ?? `Verranno eliminate definitivamente tutte le ${week.count} foto di questa settimana, da database e storage. L'azione è irreversibile.`}
+          confirmLabel="ELIMINA"
+          isPending={deleteWeek.isPending}
+          onConfirm={handleDeleteWeek}
+          onCancel={() => { setConfirmDelete(false); setDeleteError(null) }}
+        />
       )}
     </div>
   )
@@ -1626,8 +1981,6 @@ export function ClientDetail() {
   const { data: activeDietInfo } = useActiveDietInfo(id)
   const { data: formUrl } = useQuestionnaireFormUrl()
   const setQuestionnaire = useSetQuestionnaire()
-  const updateProgramExpiry = useUpdateProgramExpiry()
-  const updateDietExpiry = useUpdateDietExpiry()
 
   const pending = client?.questionnaire_pending ?? false
   const [showReset, setShowReset] = useState(false)
@@ -1743,24 +2096,10 @@ export function ClientDetail() {
         />
       )}
 
-      {/* Scadenze programma e dieta */}
+      {/* Scadenze programma e dieta (sola lettura: si modificano dai box sotto) */}
       <div className="grid grid-cols-2 gap-3 mb-6">
-        <ExpiryCard
-          icon={Dumbbell}
-          type="Programma"
-          item={activeProgram}
-          clientId={id}
-          isSaving={updateProgramExpiry.isPending}
-          onSave={dateValue => updateProgramExpiry.mutateAsync({ clientId: id, programId: activeProgram?.id, expiresAt: dateValue })}
-        />
-        <ExpiryCard
-          icon={Salad}
-          type="Dieta"
-          item={activeDietInfo}
-          clientId={id}
-          isSaving={updateDietExpiry.isPending}
-          onSave={dateValue => updateDietExpiry.mutateAsync({ clientId: id, dietId: activeDietInfo?.id, expiresAt: dateValue })}
-        />
+        <ExpiryCard icon={Dumbbell} type="Programma" item={activeProgram} />
+        <ExpiryCard icon={Salad} type="Dieta" item={activeDietInfo} />
       </div>
 
       <div className="flex gap-0 border-b border-navy-700 mb-8 justify-center">
