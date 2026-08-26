@@ -102,12 +102,14 @@ function useWorkoutPrograms(clientId) {
       if (error) throw error
       // Ordina gli esercizi di ogni scheda per order_index
       return data?.map(prog => ({
-        ...prog,
-        workout_plans: prog.workout_plans?.map(plan => ({
+      ...prog,
+      workout_plans: [...(prog.workout_plans ?? [])]
+        .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+        .map(plan => ({
           ...plan,
           workout_exercises: [...(plan.workout_exercises ?? [])].sort((a, b) => a.order_index - b.order_index),
         })),
-      }))
+    }))
     },
   })
 }
