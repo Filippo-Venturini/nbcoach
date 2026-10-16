@@ -622,9 +622,9 @@ export function NewWorkoutProgram() {
   }
 
   function addPlan() {
-    const labels = ['Scheda A', 'Scheda B', 'Scheda C', 'Scheda D', 'Scheda E']
     const newIdx = plans.length
-    setPlans(prev => [...prev, makeEmptyPlan(labels[newIdx] ?? `Scheda ${newIdx + 1}`)])
+    const label = newIdx < 26 ? `Scheda ${String.fromCharCode(65 + newIdx)}` : `Scheda ${newIdx + 1}`
+    setPlans(prev => [...prev, makeEmptyPlan(label)])
     setActivePlanIdx(newIdx)
     setExpandedPlans(prev => ({ ...prev, [newIdx]: true }))
   }
@@ -931,12 +931,10 @@ export function NewWorkoutProgram() {
             })}
           </div>
 
-          {plans.length < 5 && (
-            <button onClick={addPlan} className="btn-ghost mt-4 text-sm">
-              <Plus size={14} />
-              Aggiungi scheda
-            </button>
-          )}
+          <button onClick={addPlan} className="btn-ghost mt-4 text-sm">
+            <Plus size={14} />
+            Aggiungi scheda
+          </button>
 
         </div>
 
