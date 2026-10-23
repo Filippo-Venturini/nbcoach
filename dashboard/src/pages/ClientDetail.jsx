@@ -13,7 +13,7 @@ import {
   arrayMove,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import { useParams, useSearchParams, useLocation, useNavigate, Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, ArrowRight, Upload, Plus, ExternalLink, ChevronDown, ChevronUp, Pencil, Check, X, ArrowUp, ArrowDown, Send, Clock, Dumbbell, Salad, Trash2, KeyRound, Copy } from 'lucide-react'
@@ -114,51 +114,96 @@ function useWorkoutPrograms(clientId) {
   })
 }
 
-function useSyncPlanExercises() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: async ({ clientId, planId, exercises, deletedIds }) => {
-      if (deletedIds.length) {
-        const { error } = await supabase.from('workout_exercises').delete().in('id', deletedIds)
-        if (error) throw error
-      }
+// Allinea gli esercizi di una scheda alla bozza: elimina i tolti, aggiorna gli
+// esistenti (senza toccare reps_effettive, compilate dal cliente), inserisce i
+// nuovi. L'ordine in bozza diventa order_index.
+async function syncPlanExercises(planId, exercises, deletedIds) {
+  if (deletedIds.length) {
+    const { error } = await supabase.from('workout_exercises').delete().in('id', deletedIds)
+    if (error) throw error
+  }
 
-      const results = await Promise.all(exercises.map((ex, i) => {
-        const payload = {
-          sets: ex.sets ? parseInt(ex.sets) : null,
-          reps: ex.reps || null,
-          carico: ex.carico || null,
-          rest: ex.rest?.trim() || null,
-          cadenza: ex.cadenza || null,
-          notes: ex.notes || null,
-          superset_color: ex.superset_color || null,
-          order_index: i,
-        }
-        return ex.dbId
-          ? supabase.from('workout_exercises').update(payload).eq('id', ex.dbId)
-          : supabase.from('workout_exercises').insert({ ...payload, plan_id: planId, exercise_id: ex.exercise_id })
-      }))
-      const failed = results.find(r => r.error)
-      if (failed) throw failed.error
-    },
-    onSuccess: (_, { clientId }) => {
-      qc.invalidateQueries({ queryKey: ['workout-programs', clientId] })
-    },
-  })
+  const results = await Promise.all(exercises.map((ex, i) => {
+    const payload = {
+      sets: ex.sets ? parseInt(ex.sets) : null,
+      reps: ex.reps || null,
+      carico: ex.carico || null,
+      rest: ex.rest?.trim() || null,
+      cadenza: ex.cadenza || null,
+      notes: ex.notes || null,
+      superset_color: ex.superset_color || null,
+      order_index: i,
+    }
+    return ex.dbId
+      ? supabase.from('workout_exercises').update(payload).eq('id', ex.dbId)
+      : supabase.from('workout_exercises').insert({ ...payload, plan_id: planId, exercise_id: ex.exercise_id })
+  }))
+  const failed = results.find(r => r.error)
+  if (failed) throw failed.error
 }
 
-function useUpdateProgramNotes() {
+// Salvataggio unico della modalità "Modifica" di un programma (vedi
+// ProgramCard). Ordine: programma, schede esistenti, schede nuove, e per
+// ultime le schede rimosse, così un errore a metà non lascia il programma con
+// schede in meno. Non è transazionale (chiamate separate, come in creazione):
+// invalidiamo anche in caso di errore, così un nuovo "Salva" riparte dallo
+// stato reale in DB (ciò che era stato inserito a metà non è in bozza e viene
+// rimosso, poi reinserito).
+// fullEdit = false (programmi in storico): si salvano solo le date.
+function useSaveProgramEdits() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: async ({ clientId, programId, notes }) => {
-      const { error } = await supabase
-        .from('workout_programs')
-        .update({ notes: notes || null })
-        .eq('id', programId)
-      if (error) throw error
+    mutationFn: async ({ clientId, program, draft, fullEdit }) => {
+      const programPatch = { starts_at: draft.starts_at || null, expires_at: draft.expires_at || null }
+      if (fullEdit) programPatch.notes = draft.notes.trim() || null
+      const { error: progError } = await supabase.from('workout_programs').update(programPatch).eq('id', program.id)
+      if (progError) throw progError
+      if (!fullEdit) return
+
+      const originalPlans = program.workout_plans ?? []
+      for (const plan of draft.plans) {
+        const name = plan.name.trim()
+        const original = originalPlans.find(p => p.id === plan.dbId)
+
+        if (!original) {
+          const { data: saved, error } = await supabase
+            .from('workout_plans')
+            .insert({ client_id: clientId, program_id: program.id, name, is_active: true })
+            .select('id')
+            .single()
+          if (error) throw error
+          await syncPlanExercises(saved.id, plan.exercises, [])
+          continue
+        }
+
+        if (name !== original.name) {
+          const { error } = await supabase.from('workout_plans').update({ name }).eq('id', original.id)
+          if (error) throw error
+        }
+        const originalExercises = (original.workout_exercises ?? []).map(normalizeExercise)
+        if (!sameExercises(originalExercises, plan.exercises)) {
+          const deletedIds = originalExercises
+            .filter(ex => !plan.exercises.some(d => d.dbId === ex.dbId))
+            .map(ex => ex.dbId)
+          await syncPlanExercises(original.id, plan.exercises, deletedIds)
+        }
+      }
+
+      const removedIds = originalPlans
+        .filter(p => !draft.plans.some(d => d.dbId === p.id))
+        .map(p => p.id)
+      if (removedIds.length) {
+        const { error: exError } = await supabase.from('workout_exercises').delete().in('plan_id', removedIds)
+        if (exError) throw exError
+        const { error: plansError } = await supabase.from('workout_plans').delete().in('id', removedIds)
+        if (plansError) throw plansError
+      }
     },
-    onSuccess: (_, { clientId }) => {
+    onSettled: (_, __, { clientId }) => {
       qc.invalidateQueries({ queryKey: ['workout-programs', clientId] })
+      qc.invalidateQueries({ queryKey: ['active-program', clientId] })
+      qc.invalidateQueries({ queryKey: ['last-program', clientId] })
+      qc.invalidateQueries({ queryKey: ['expiring-items'] })
     },
   })
 }
@@ -268,27 +313,8 @@ function useDeleteDiet() {
   })
 }
 
-// Aggiorna inizio + fine insieme, usato dall'editor inline nelle box di
-// programma/dieta: è l'unico punto dove le date restano modificabili, dopo
-// che il badge riassuntivo in testa pagina è diventato di sola lettura.
-function useUpdateProgramDates() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: async ({ clientId, programId, starts_at, expires_at }) => {
-      const { error } = await supabase
-        .from('workout_programs')
-        .update({ starts_at, expires_at })
-        .eq('id', programId)
-      if (error) throw error
-    },
-    onSuccess: (_, { clientId }) => {
-      qc.invalidateQueries({ queryKey: ['workout-programs', clientId] })
-      qc.invalidateQueries({ queryKey: ['active-program', clientId] })
-      qc.invalidateQueries({ queryKey: ['expiring-items'] })
-    },
-  })
-}
-
+// Aggiorna inizio + fine insieme, usato dall'editor inline nelle box delle
+// diete (le date dei programmi si modificano dalla modalità "Modifica").
 function useUpdateDietDates() {
   const qc = useQueryClient()
   return useMutation({
@@ -462,6 +488,39 @@ function makeNewDraftExercise(catalogItem) {
     reps_effettive: null,
     sets: '', reps: '', carico: '', rest: '', cadenza: '', notes: '',
     superset_color: null,
+  }
+}
+
+// Campi che, se cambiati, richiedono di risincronizzare gli esercizi di una scheda
+const EXERCISE_SYNC_FIELDS = ['dbId', 'exercise_id', 'sets', 'reps', 'carico', 'rest', 'cadenza', 'notes', 'superset_color']
+
+function sameExercises(a, b) {
+  return a.length === b.length && a.every((ex, i) => EXERCISE_SYNC_FIELDS.every(f => ex[f] === b[i][f]))
+}
+
+// Bozza di un programma in modifica: date, note e schede con i loro esercizi.
+// key = chiave React stabile, dbId = id in DB (null per le schede nuove).
+function makeProgramDraft(program) {
+  return {
+    starts_at: program.starts_at ?? '',
+    expires_at: program.expires_at ?? '',
+    notes: program.notes ?? '',
+    plans: (program.workout_plans ?? []).map(plan => ({
+      key: plan.id,
+      dbId: plan.id,
+      name: plan.name ?? '',
+      exercises: (plan.workout_exercises ?? []).map(normalizeExercise),
+    })),
+  }
+}
+
+// Prima etichetta "Scheda A/B/C..." non ancora usata nel programma
+// (stessa numerazione della creazione, ma salta i nomi già presenti)
+function nextPlanName(plans) {
+  const used = new Set(plans.map(p => p.name.trim()))
+  for (let i = 0; ; i++) {
+    const label = i < 26 ? `Scheda ${String.fromCharCode(65 + i)}` : `Scheda ${i + 1}`
+    if (!used.has(label)) return label
   }
 }
 
@@ -778,18 +837,11 @@ function VolumeBadges({ counts }) {
   )
 }
 
-// Esercizi di una scheda con applicati i valori in corso di modifica (bozza non
-// ancora salvata), così i contatori di volume si aggiornano live
-function exercisesWithDraft(plan, draft) {
-  return draft ?? (plan.workout_exercises ?? [])
-}
-
-// drafts: { [planId]: bozza } delle schede attualmente in modifica
-function ProgramVolumeCounter({ plans, drafts }) {
+// exercises: tutti gli esercizi del programma, salvati o della bozza in
+// modifica, così il contatore si aggiorna live mentre si modifica
+function ProgramVolumeCounter({ exercises }) {
   const [open, setOpen] = useState(false)
-  const counts = countsFromExercises(
-    (plans ?? []).flatMap(p => exercisesWithDraft(p, drafts?.[p.id]))
-  )
+  const counts = countsFromExercises(exercises)
   const entries = Object.entries(counts)
   if (!entries.length) return null
   const total = entries.reduce((s, [, c]) => s + c, 0)
@@ -808,8 +860,8 @@ function ProgramVolumeCounter({ plans, drafts }) {
   )
 }
 
-function PlanVolumeCounter({ plan, draft }) {
-  const counts = countsFromExercises(exercisesWithDraft(plan, draft))
+function PlanVolumeCounter({ exercises }) {
+  const counts = countsFromExercises(exercises)
   if (!Object.keys(counts).length) return null
   return (
     <div className="px-4 py-2 bg-navy-950 border-b border-navy-700">
@@ -847,26 +899,26 @@ function ExpiryCard({ icon: Icon, type, item }) {
 
 // ─── Tab: Scheda ──────────────────────────────────────────────
 
-function PlanCard({ plan, editable, clientId, onDraftChange }) {
-  const [expanded, setExpanded] = useState(false)
-  const [editing, setEditing] = useState(false)
+// Scheda di un programma. Senza bozza mostra gli esercizi salvati; con una
+// bozza (programma in modalità "Modifica") diventa editabile: nome, esercizi,
+// ordine, eliminazione. La bozza vive in ProgramCard, che salva tutto insieme.
+function PlanCard({ plan, draft, onDraftChange, onRemove }) {
+  const editing = !!draft
+  const [expanded, setExpanded] = useState(editing)
   const [videoId, setVideoId] = useState(null)
-  const [draftExercises, setDraftExercises] = useState([])
   const [showCatalog, setShowCatalog] = useState(false)
-  const syncExercises = useSyncPlanExercises()
 
+  // Entrando in modifica le schede si aprono tutte
   useEffect(() => {
-    onDraftChange?.(plan.id, editing ? draftExercises : null)
-  }, [plan.id, editing, draftExercises, onDraftChange])
-
-  useEffect(() => () => onDraftChange?.(plan.id, null), [plan.id, onDraftChange])
+    if (editing) setExpanded(true)
+  }, [editing])
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
 
-  function startEdit() {
-    setDraftExercises((plan.workout_exercises ?? []).map(normalizeExercise))
-    setEditing(true)
-    setExpanded(true)
+  const exercises = editing ? draft.exercises : (plan?.workout_exercises ?? [])
+
+  function setDraftExercises(update) {
+    onDraftChange(d => ({ ...d, exercises: update(d.exercises) }))
   }
 
   function updateDraftField(id, field, value) {
@@ -891,72 +943,54 @@ function PlanCard({ plan, editable, clientId, onDraftChange }) {
     })
   }
 
-  async function saveEdit() {
-    const deletedIds = (plan.workout_exercises ?? [])
-      .filter(ex => !draftExercises.some(d => d.dbId === ex.id))
-      .map(ex => ex.id)
-    try {
-      await syncExercises.mutateAsync({ clientId, planId: plan.id, exercises: draftExercises, deletedIds })
-      setEditing(false)
-    } catch {
-      // resta in modifica: l'errore è mostrato accanto ai pulsanti
-    }
-  }
-
-  function cancelEdit() {
-    setEditing(false)
-  }
-
   function toggleVideo(ytId) {
     setVideoId(prev => prev === ytId ? null : ytId)
   }
 
   return (
     <div className="border border-navy-700 bg-navy-900">
-      <div className="flex items-center justify-between px-4 py-2.5 bg-navy-800 border-l-2 border-gold-500/60">
-        <button
-          className="flex items-center gap-3 flex-1 text-left"
-          onClick={() => { setExpanded(e => !e); setEditing(false) }}
-        >
-          <div className="flex items-baseline gap-2.5">
-            <span className="font-heading font-bold uppercase tracking-wider text-gold-400 text-sm">{plan.name}</span>
-            <span className="text-slate-500 text-xs">{plan.workout_exercises?.length ?? 0} esercizi</span>
+      <div className="flex items-center justify-between gap-3 px-4 py-2.5 bg-navy-800 border-l-2 border-gold-500/60">
+        {editing ? (
+          <div className="flex items-center gap-2.5 flex-1 min-w-0">
+            <input
+              className="input text-sm py-1 max-w-56 font-heading font-bold uppercase tracking-wider text-gold-400"
+              value={draft.name}
+              onChange={e => onDraftChange(d => ({ ...d, name: e.target.value }))}
+              placeholder="Nome scheda"
+            />
+            <span className="text-slate-500 text-xs shrink-0">{exercises.length} esercizi</span>
           </div>
-        </button>
-        <div className="flex items-center gap-2">
-          {editable && !editing && (
-            <button onClick={startEdit} className="btn-ghost text-xs px-2 py-1">
-              <Pencil size={12} /> Modifica
+        ) : (
+          <button className="flex items-baseline gap-2.5 flex-1 text-left" onClick={() => setExpanded(e => !e)}>
+            <span className="font-heading font-bold uppercase tracking-wider text-gold-400 text-sm">{plan.name}</span>
+            <span className="text-slate-500 text-xs">{exercises.length} esercizi</span>
+          </button>
+        )}
+        <div className="flex items-center gap-2 shrink-0">
+          {editing && (
+            <button
+              type="button"
+              onClick={onRemove}
+              className="text-slate-600 hover:text-red-400 transition-colors p-1"
+              title="Elimina scheda"
+            >
+              <Trash2 size={14} />
             </button>
           )}
-          {editing && (
-            <>
-              {syncExercises.isError && (
-                <span className="text-red-400 text-xs">Salvataggio non riuscito</span>
-              )}
-              <button onClick={cancelEdit} className="btn-ghost text-xs px-2 py-1">
-                <X size={12} /> Annulla
-              </button>
-              <button onClick={saveEdit} disabled={syncExercises.isPending} className="btn-primary text-xs px-3 py-1 disabled:opacity-50">
-                <Check size={12} /> {syncExercises.isPending ? 'Salvo...' : 'Salva'}
-              </button>
-            </>
-          )}
-          {expanded
-            ? <ChevronUp size={16} className="text-slate-500" />
-            : <ChevronDown size={16} className="text-slate-500" />
-          }
+          <button onClick={() => setExpanded(e => !e)} className="text-slate-500 hover:text-white transition-colors">
+            {expanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+          </button>
         </div>
       </div>
 
       {expanded && (
         <div className="border-t border-navy-700">
-          <PlanVolumeCounter plan={plan} draft={editing ? draftExercises : null} />
+          <PlanVolumeCounter exercises={exercises} />
           <div className="divide-y divide-navy-700">
             {editing ? (
               <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-                <SortableContext items={draftExercises.map(e => e.id)} strategy={verticalListSortingStrategy}>
-                  {draftExercises.map(ex => (
+                <SortableContext items={exercises.map(e => e.id)} strategy={verticalListSortingStrategy}>
+                  {exercises.map(ex => (
                     <SortableExerciseEditRow
                       key={ex.id}
                       id={ex.id}
@@ -968,15 +1002,14 @@ function PlanCard({ plan, editable, clientId, onDraftChange }) {
                 </SortableContext>
               </DndContext>
             ) : (
-              plan.workout_exercises?.map(ex => (
+              exercises.map(ex => (
                 <ExerciseViewRow key={ex.id} ex={ex} videoId={videoId} onVideoToggle={toggleVideo} />
               ))
             )}
-            {editing && draftExercises.length === 0 && (
-              <p className="text-slate-500 text-sm px-4 py-3">Nessun esercizio, aggiungine uno</p>
-            )}
-            {!editing && !plan.workout_exercises?.length && (
-              <p className="text-slate-500 text-sm px-4 py-3">Nessun esercizio</p>
+            {!exercises.length && (
+              <p className="text-slate-500 text-sm px-4 py-3">
+                {editing ? 'Nessun esercizio, aggiungine uno' : 'Nessun esercizio'}
+              </p>
             )}
           </div>
           {editing && (
@@ -996,40 +1029,88 @@ function PlanCard({ plan, editable, clientId, onDraftChange }) {
   )
 }
 
+// Box di un programma. Un solo "Modifica" mette in modifica tutto il programma
+// (date, note, schede: esercizi, nomi, aggiunta ed eliminazione) e un solo
+// "Salva" scrive tutto. Per i programmi in storico si modificano solo le date
+// (serve a riattivarli), le schede restano in sola lettura.
 function ProgramCard({ program, clientId }) {
   const status = getStatus(program)
+  const fullEdit = status !== 'history'
   const [open, setOpen] = useState(status === 'active')
-  const [editingNotes, setEditingNotes] = useState(false)
-  const [notesValue, setNotesValue] = useState(program.notes ?? '')
-  // Bozze delle schede in modifica, per il contatore di volume del programma
-  const [planDrafts, setPlanDrafts] = useState({})
+  // null = vista; altrimenti bozza in modifica (vedi makeProgramDraft)
+  const [draft, setDraft] = useState(null)
+  const [initialDraft, setInitialDraft] = useState(null)
+  const [editError, setEditError] = useState(null)
+  const [confirmDiscard, setConfirmDiscard] = useState(false)
+  const [removePlanTarget, setRemovePlanTarget] = useState(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleteError, setDeleteError] = useState(null)
-  const updateNotes = useUpdateProgramNotes()
-  const updateDates = useUpdateProgramDates()
+  const saveProgram = useSaveProgramEdits()
   const deleteProgram = useDeleteProgram()
+  const editing = draft !== null
 
-  const handleDraftChange = useCallback((planId, draft) => {
-    setPlanDrafts(prev => {
-      if (!draft) {
-        if (!(planId in prev)) return prev
-        const next = { ...prev }
-        delete next[planId]
-        return next
-      }
-      if (prev[planId] === draft) return prev
-      return { ...prev, [planId]: draft }
-    })
-  }, [])
-
-  async function saveNotes() {
-    await updateNotes.mutateAsync({ clientId, programId: program.id, notes: notesValue })
-    setEditingNotes(false)
+  function startEdit() {
+    const d = makeProgramDraft(program)
+    setDraft(d)
+    setInitialDraft(d)
+    setEditError(null)
+    setOpen(true)
   }
 
-  function cancelNotes() {
-    setNotesValue(program.notes ?? '')
-    setEditingNotes(false)
+  function exitEdit() {
+    setDraft(null)
+    setInitialDraft(null)
+    setEditError(null)
+    setConfirmDiscard(false)
+  }
+
+  function cancelEdit() {
+    if (JSON.stringify(draft) !== JSON.stringify(initialDraft)) setConfirmDiscard(true)
+    else exitEdit()
+  }
+
+  async function saveEdit() {
+    if (draft.starts_at && draft.expires_at && draft.expires_at < draft.starts_at) {
+      setEditError('La data di fine è precedente a quella di inizio')
+      return
+    }
+    if (fullEdit && !draft.plans.length) {
+      setEditError('Il programma deve avere almeno una scheda')
+      return
+    }
+    if (fullEdit && draft.plans.some(p => !p.name.trim())) {
+      setEditError('Ogni scheda deve avere un nome')
+      return
+    }
+    setEditError(null)
+    try {
+      await saveProgram.mutateAsync({ clientId, program, draft, fullEdit })
+      exitEdit()
+    } catch (err) {
+      setEditError('Salvataggio non riuscito: ' + (err.message || 'errore sconosciuto'))
+    }
+  }
+
+  function updatePlanDraft(key, update) {
+    setDraft(d => ({ ...d, plans: d.plans.map(p => p.key === key ? update(p) : p) }))
+  }
+
+  function addPlan() {
+    setDraft(d => ({
+      ...d,
+      plans: [...d.plans, { key: crypto.randomUUID(), dbId: null, name: nextPlanName(d.plans), exercises: [] }],
+    }))
+  }
+
+  function removePlan(key) {
+    setDraft(d => ({ ...d, plans: d.plans.filter(p => p.key !== key) }))
+    setRemovePlanTarget(null)
+  }
+
+  // Una scheda appena aggiunta e ancora vuota si toglie senza conferma
+  function requestRemovePlan(plan) {
+    if (!plan.dbId && !plan.exercises.length) removePlan(plan.key)
+    else setRemovePlanTarget(plan)
   }
 
   async function handleDeleteProgram() {
@@ -1042,95 +1123,157 @@ function ProgramCard({ program, clientId }) {
     }
   }
 
+  const volumeExercises = editing && fullEdit
+    ? draft.plans.flatMap(p => p.exercises)
+    : (program.workout_plans ?? []).flatMap(p => p.workout_exercises ?? [])
+
+  const borderClass = editing
+    ? 'border-gold-500/60'
+    : status === 'active' ? 'border-gold-500/30' : status === 'future' ? 'border-blue-500/20' : ''
+
   return (
-    <div className={`card mb-4 ${status === 'active' ? 'border-gold-500/30' : status === 'future' ? 'border-blue-500/20' : ''}`}>
-      {/* Header: badge + nome + date, editabili senza aprire/chiudere la card */}
+    <div className={`card mb-4 ${borderClass}`}>
+      {/* Header: badge + nome + date + azioni */}
       <div className="flex items-center justify-between gap-4">
-        <button className="flex items-center gap-3 flex-1 text-left" onClick={() => setOpen(o => !o)}>
+        <button className="flex items-center gap-3 flex-1 text-left" onClick={() => !editing && setOpen(o => !o)}>
           <p className="font-heading font-bold italic uppercase tracking-wide text-white text-lg text-left">
             {program.name ?? 'Programma'}
           </p>
           <StatusBadge status={status} />
+          {editing && <span className="text-xs font-heading uppercase tracking-wider text-gold-400">In modifica</span>}
         </button>
         <div className="flex items-center gap-3 shrink-0">
-          <DateRangeEditor
-            startsAt={program.starts_at}
-            expiresAt={program.expires_at}
-            isSaving={updateDates.isPending}
-            onSave={dates => updateDates.mutateAsync({ clientId, programId: program.id, ...dates })}
-          />
-          <button
-            type="button"
-            onClick={e => { e.stopPropagation(); setConfirmDelete(true) }}
-            className="text-slate-600 hover:text-red-400 transition-colors p-1"
-            title="Elimina programma"
-          >
-            <Trash2 size={14} />
-          </button>
-          <button onClick={() => setOpen(o => !o)} className="text-slate-500 hover:text-white transition-colors">
-            {open ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-          </button>
+          {!editing && (
+            <>
+              <span className="text-slate-500 text-xs">
+                {program.starts_at ? fmt(program.starts_at) : '—'} → {program.expires_at ? fmt(program.expires_at) : '—'}
+              </span>
+              <button type="button" onClick={startEdit} className="btn-ghost text-xs px-2 py-1">
+                <Pencil size={12} /> Modifica
+              </button>
+              <button
+                type="button"
+                onClick={e => { e.stopPropagation(); setConfirmDelete(true) }}
+                className="text-slate-600 hover:text-red-400 transition-colors p-1"
+                title="Elimina programma"
+              >
+                <Trash2 size={14} />
+              </button>
+              <button onClick={() => setOpen(o => !o)} className="text-slate-500 hover:text-white transition-colors">
+                {open ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+              </button>
+            </>
+          )}
         </div>
       </div>
 
       {open && (
         <div className="mt-3 space-y-3">
           {/* Volume */}
-          <ProgramVolumeCounter plans={program.workout_plans} drafts={planDrafts} />
+          <ProgramVolumeCounter exercises={volumeExercises} />
 
-          {/* Note: visibili solo se presenti, editing inline */}
-          {!editingNotes && notesValue && (
-            <div className="flex items-start gap-2">
-              <p className="text-sm italic flex-1 whitespace-pre-wrap">
-                <span className="text-slate-300">Note programma: </span>
-                <span className="text-slate-400">{notesValue}</span>
-              </p>
-              {status !== 'history' && (
-                <button onClick={() => setEditingNotes(true)} className="p-1 text-slate-600 hover:text-white transition-colors shrink-0 mt-0.5">
-                  <Pencil size={12} />
-                </button>
-              )}
-            </div>
-          )}
-          {!editingNotes && !notesValue && status !== 'history' && (
-            <button onClick={() => setEditingNotes(true)} className="text-slate-600 hover:text-slate-400 text-xs transition-colors text-left">
-              + Aggiungi note
-            </button>
-          )}
-          {editingNotes && (
-            <div>
-              <textarea
-                className="input w-full text-sm resize-none"
-                rows={3}
-                value={notesValue}
-                onChange={e => setNotesValue(e.target.value)}
-                placeholder="Note generali per il cliente..."
-                autoFocus
-              />
-              <div className="flex gap-2 mt-2">
-                <button onClick={cancelNotes} className="btn-ghost text-xs px-2 py-1">
-                  <X size={12} /> Annulla
-                </button>
-                <button onClick={saveNotes} disabled={updateNotes.isPending} className="btn-primary text-xs px-3 py-1 disabled:opacity-50">
-                  <Check size={12} /> {updateNotes.isPending ? 'Salvo...' : 'Salva'}
-                </button>
+          {/* Date: in vista stanno nell'header, in modifica diventano campi */}
+          {editing && (
+            <div className="flex flex-wrap items-end gap-3">
+              <div>
+                <label className="block text-xs text-slate-500 mb-1">Inizio</label>
+                <input
+                  type="date"
+                  className="input text-xs py-1 w-36"
+                  style={{ colorScheme: 'dark' }}
+                  value={draft.starts_at}
+                  onChange={e => setDraft(d => ({ ...d, starts_at: e.target.value }))}
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-slate-500 mb-1">Fine</label>
+                <input
+                  type="date"
+                  className="input text-xs py-1 w-36"
+                  style={{ colorScheme: 'dark' }}
+                  value={draft.expires_at}
+                  min={draft.starts_at || undefined}
+                  onChange={e => setDraft(d => ({ ...d, expires_at: e.target.value }))}
+                />
               </div>
             </div>
           )}
 
+          {/* Note */}
+          {editing && fullEdit ? (
+            <div>
+              <label className="block text-xs text-slate-500 mb-1">Note programma</label>
+              <textarea
+                className="input w-full text-sm resize-none"
+                rows={3}
+                value={draft.notes}
+                onChange={e => setDraft(d => ({ ...d, notes: e.target.value }))}
+                placeholder="Note generali per il cliente..."
+              />
+            </div>
+          ) : program.notes && (
+            <p className="text-sm italic whitespace-pre-wrap">
+              <span className="text-slate-300">Note programma: </span>
+              <span className="text-slate-400">{program.notes}</span>
+            </p>
+          )}
+
           {/* Schede */}
           <div className="space-y-2">
-            {program.workout_plans?.map(plan => (
-              <PlanCard
-                key={plan.id}
-                plan={plan}
-                editable={status !== 'history'}
-                clientId={clientId}
-                onDraftChange={handleDraftChange}
-              />
-            ))}
+            {editing && fullEdit
+              ? draft.plans.map(plan => (
+                <PlanCard
+                  key={plan.key}
+                  plan={program.workout_plans?.find(p => p.id === plan.dbId)}
+                  draft={plan}
+                  onDraftChange={update => updatePlanDraft(plan.key, update)}
+                  onRemove={() => requestRemovePlan(plan)}
+                />
+              ))
+              : program.workout_plans?.map(plan => (
+                <PlanCard key={plan.id} plan={plan} />
+              ))}
           </div>
+
+          {editing && fullEdit && (
+            <button type="button" onClick={addPlan} className="btn-ghost text-sm">
+              <Plus size={14} /> Aggiungi scheda
+            </button>
+          )}
+
+          {/* Barra azioni della modifica, sempre visibile mentre si scorre il programma */}
+          {editing && (
+            <div className="sticky bottom-0 z-10 -mx-5 -mb-5 px-5 py-3 bg-navy-800 border-t border-gold-500/30 flex items-center justify-end gap-2 flex-wrap">
+              {editError && <span className="text-red-400 text-xs mr-auto">{editError}</span>}
+              <button type="button" onClick={cancelEdit} disabled={saveProgram.isPending} className="btn-ghost text-xs px-3 py-1.5 disabled:opacity-50">
+                <X size={12} /> Annulla
+              </button>
+              <button type="button" onClick={saveEdit} disabled={saveProgram.isPending} className="btn-primary text-xs px-4 py-1.5 disabled:opacity-50">
+                <Check size={12} /> {saveProgram.isPending ? 'Salvo...' : 'Salva modifiche'}
+              </button>
+            </div>
+          )}
         </div>
+      )}
+
+      {removePlanTarget && (
+        <ConfirmModal
+          message="Eliminare questa scheda?"
+          detail={`"${removePlanTarget.name.trim() || 'Scheda'}" e i suoi esercizi verranno eliminati quando salvi le modifiche.`}
+          confirmLabel="ELIMINA"
+          onConfirm={() => removePlan(removePlanTarget.key)}
+          onCancel={() => setRemovePlanTarget(null)}
+        />
+      )}
+
+      {confirmDiscard && (
+        <ConfirmModal
+          message="Scartare le modifiche?"
+          detail="Le modifiche non salvate a questo programma andranno perse."
+          confirmLabel="SCARTA"
+          onConfirm={exitEdit}
+          onCancel={() => setConfirmDiscard(false)}
+        />
       )}
 
       {confirmDelete && (
