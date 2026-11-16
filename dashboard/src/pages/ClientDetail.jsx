@@ -353,17 +353,18 @@ function useDietPlans(clientId) {
   })
 }
 
-function getMonday(dateStr) {
+// Foto raggruppate per giorno effettivo di caricamento (mezzanotte locale).
+function getDayStart(dateStr) {
   const d = new Date(dateStr)
-  const day = d.getDay()
-  const monday = new Date(d)
-  monday.setDate(d.getDate() - day + (day === 0 ? -6 : 1))
-  monday.setHours(0, 0, 0, 0)
-  return monday
+  d.setHours(0, 0, 0, 0)
+  return d
 }
 
-function getWeekKey(dateStr) {
-  return getMonday(dateStr).toISOString().split('T')[0]
+function getDayKey(dateStr) {
+  const d = getDayStart(dateStr)
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${d.getFullYear()}-${m}-${day}`
 }
 
 function usePhotoWeeks(clientId, sinceDate) {
@@ -381,8 +382,8 @@ function usePhotoWeeks(clientId, sinceDate) {
       if (error) throw error
       const weekMap = new Map()
       for (const photo of data ?? []) {
-        const key = getWeekKey(photo.created_at)
-        if (!weekMap.has(key)) weekMap.set(key, { key, weekStart: getMonday(photo.created_at), count: 0 })
+        const key = getDayKey(photo.created_at)
+        if (!weekMap.has(key)) weekMap.set(key, { key, weekStart: getDayStart(photo.created_at), count: 0 })
         weekMap.get(key).count++
       }
       return Array.from(weekMap.values())
@@ -392,7 +393,7 @@ function usePhotoWeeks(clientId, sinceDate) {
 
 function useWeekPhotos(clientId, weekKey, weekStart, enabled) {
   const weekEnd = new Date(weekStart)
-  weekEnd.setDate(weekEnd.getDate() + 7)
+  weekEnd.setDate(weekEnd.getDate() + 1)
   return useQuery({
     queryKey: ['week-photos', clientId, weekKey],
     enabled,
@@ -415,7 +416,7 @@ function useWeekPhotos(clientId, weekKey, weekStart, enabled) {
   })
 }
 
-// Elimina TUTTE le foto di una settimana in un colpo solo: prima i file dal
+// Elimina TUTTE le foto di un giorno in un colpo solo: prima i file dal
 // bucket (batch), poi le righe in DB (batch). Se lo storage fallisce non
 // tocchiamo il DB, così non resta un riferimento a file ancora presenti.
 function useDeleteWeekPhotos() {
@@ -423,7 +424,7 @@ function useDeleteWeekPhotos() {
   return useMutation({
     mutationFn: async ({ clientId, weekStart }) => {
       const weekEnd = new Date(weekStart)
-      weekEnd.setDate(weekEnd.getDate() + 7)
+      weekEnd.setDate(weekEnd.getDate() + 1)
 
       const { data: rows, error: fetchError } = await supabase
         .from('progress_photos')
@@ -1682,7 +1683,7 @@ function WeekRow({ week, clientId }) {
             type="button"
             onClick={() => setConfirmDelete(true)}
             className="text-slate-600 hover:text-red-400 transition-colors p-1"
-            title="Elimina tutte le foto di questa settimana"
+            title="Elimina tutte le foto di questo giorno"
           >
             <Trash2 size={15} />
           </button>
@@ -1705,8 +1706,8 @@ function WeekRow({ week, clientId }) {
 
       {confirmDelete && (
         <ConfirmModal
-          message="Eliminare tutte le foto di questa settimana?"
-          detail={deleteError ?? `Verranno eliminate definitivamente tutte le ${week.count} foto di questa settimana, da database e storage. L'azione è irreversibile.`}
+          message="Eliminare tutte le foto di questo giorno?"
+          detail={deleteError ?? `Verranno eliminate definitivamente tutte le ${week.count} foto di questo giorno, da database e storage. L'azione è irreversibile.`}
           confirmLabel="ELIMINA"
           isPending={deleteWeek.isPending}
           onConfirm={handleDeleteWeek}
